@@ -1,0 +1,44 @@
+# these are params and values for 
+#  BOXB, boxwood blight - in Degs Celsius (C)
+  fullname   <- "Boxwood_blight"
+  pestof     <- "boxwood"
+  stgorder   <- c("OA","E","L","P","A") #
+  owstage    <- "OA"   # OA means ow as adults
+  eggLDT     <- 9 
+  eggUDT     <- 29  # Climex: DV2 ca. 27 DV3 ca. 30-32 so use 30 as upper horiz cutoff
+  larvaeLDT  <- 9 
+  larvaeUDT  <- 29 #upper dev. threshold-need to verify
+  pupaeLDT   <- 9 
+  pupaeUDT   <- 29
+  adultLDT   <- 9  #for oviposition
+  adultUDT   <- 29
+  eggDD      <- 150  # 
+  larvaeDD   <- 150  #                
+  pupDD      <- 150  #           
+  adultDD    <- 150  # add adult PreOV=60 + ca. 41 DD to peak OV
+  OWadultDD  <- 150  # DD out of "OW stage" to first OV in spring = assume ca. same as adult PreOV = 60 DD
+  #OWeggDD    <- 50  # DD out of "OW stage" to first OV in spring = assume ca. same as adult PreOV = 60 DD
+  calctype   <- "boxblt"
+  # Pest Event Maps (PEMs) must be turned on for these to get used:
+  PEMnumgens <- 3  # create PEMS for up to this many generations (max is 4)
+  eggEventDD <- 40 # PEMs for egg hatch is ca 80/86 DDs into stage
+  OWEventP         <- 1 # 
+  OWEventLabel     <- "adult development" # Label for PEM OWadult
+  eggEventLabel    <- "initial infection" # Label for PEM egg stage
+  larvaeEventDD    <- 40 # PEMs for larvae stage is 78 DDs into stage
+  larvaeEventLabel <- "ongoing infection" # Label for PEM larvae stage
+  pupaeEventDD     <- 40 # PEMs for pupal stage is 58 DDs into stage
+  pupaeEventLabel  <- "2nd ongoing infection" # Label for PEM pupal stage
+  adultEventDD     <- 40 # PEMs for adult stage (1st oviposition) is 60 DDs into stage
+  adultEventLabel  <- "end of infection cycle" # Label for PEM adult stage
+  coldstress_threshold <- -10   # 1985B NEW all stages chill/heat stress units: threshold
+  coldstress_units_max1 <- 300  # use for chill stress units: ChillDD limit; so "most" all die once reached
+  coldstress_units_max2 <- 600  # use for chill stress units: ChillDD limit; so all die once reached
+  heatstress_threshold <- 32   # 1985B NEW all stages chill/heat stress units: threshold
+  heatstress_units_max1 <- 140  # use for heat stress units: HeatDD limit; so "most" all die once reached
+  heatstress_units_max2 <- 280  # use for heat stress units: HeatDD limit; so all die once reached
+  drystress_threshold <- 53   # Accumulate DRYSTRESS if RH < threshold
+  drystress_units_max1 <- 3500  # use for heat stress units: HeatDD limit; so "most" all die once reached
+  drystress_units_max2 <- 6000  # use for heat stress units: HeatDD limit; so all die once reached
+#                                             
+#
