@@ -9,11 +9,6 @@ pkgs <- c("doParallel", "dplyr", "foreach", "ggplot2", "ggthemes",
           "stringr", "tidyr", "tictoc", "tools", "toOrdinal")
 ld_pkgs <- lapply(pkgs, library, character.only = TRUE) # load them
 
-# Bring in states feature for summary maps (PNG files), extract the lower 
-# 48 states, and project it. Requires these libraries: "mapdata" and "maptools."
-cat("Downloading US states feature\n")
-states <- map_data("state")
-
 # Start timing the model run
 tic("Total run time")
 
@@ -24,7 +19,8 @@ tic("Total run time")
 ########  Tyson Wepprich for APHIS PPQ and IPM needs ###########################
 ################################################################################
 
-# Last modified by B. Barker on 5/28/21
+# Last modified by B. Barker on 7/6/21
+# - Fixed bugs in Daily Loop and in PEM mapping
 
 # 11v. This is for development of a plant disease risk version of DDRP so use prism data such as:
 #   A) Add Drystress looking similar to Heat and Cold (Chill) stress, using relhum=func(tmean,tdmean)
@@ -51,7 +47,7 @@ option_list <- list(
   make_option(c("--keep_leap"), action = "store", type = "integer", 
               default = 0, help = "should leap day be kept? 0=no, 1=yes"),
   make_option(c("--region_param"), type = "character", action = "store", 
-              help = "study region: CONUS, EAST, WEST, or 
+              help = "study region: EUROPE, CONUS, EAST, WEST, or 
               state (2-letter abbr.)"),
   make_option(c("--exclusions_stressunits"), type = "integer", action = "store",
               default = 0, help = "0 = off, 1 = on"),
@@ -101,19 +97,19 @@ if (!is.null(opts$out_dir)) {
   #### * Default values for params, if not provided in command line ####
   spp           <- "BOXB" # Default species to use
   forecast_data <- "PRISM" # Forecast data to use (PRISM or NMME)
-  start_year    <- "2016" # Year to use
-  start_doy     <- 1 # Start day of year          
-  end_doy       <- 365 # End day of year - need 365 if voltinism map 
+  start_year    <- "2020" # Year to use
+  start_doy     <- 152 # Start day of year          
+  end_doy       <- 243 # End day of year - need 365 if voltinism map 
   keep_leap     <- 1 # Should leap day be kept?
-  region_param  <- "NH" # Region [CONUS, EAST, WEST, or state (2-letter abbr.)]
+  region_param  <- "OR" # Region [CONUS, EAST, WEST, or state (2-letter abbr.)]
   exclusions_stressunits    <- 1 # Turn on/off climate stress unit exclusions
-  ref_date      <- "20160615" # Reference date for 2 and 3 day risk maps
+  ref_date      <- "20200617" # Reference date for 2 and 3 day risk maps
   pems          <- 1 # Turn on/off pest event maps
   mapA          <- 1 # Make maps for adult stage
   mapE          <- 0 # Make maps for egg stage
   mapL          <- 0 # Make maps for larval stage
   mapP          <- 0 # Make maps for pupal stage
-  out_dir       <- "BOXB_test2" # Output dir
+  out_dir       <- "BOXB_test" # Output dir
   out_option    <- 1 # Sampling frequency
 }
 
@@ -323,7 +319,7 @@ ExtractBestPRISM <- function(files, forecast_data, keep_leap) {
 Rast_Subs_Excl <- function(brk, tile_num, type) {
   
   # Get AlLEXCL_brick
-  if (region_param %in% c("CONUS", "EAST")) {
+  if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
     AllEXCL_brick <- brick(paste0("All_Stress_Excl_tile", tile_num,".tif"))
   } else {
     AllEXCL_brick <- brick("All_Stress_Excl.tif")
@@ -374,7 +370,7 @@ SaveRaster <- function(r, step, tile_num, outnam, datatype, log_capt) {
   
   if (step == "DailyLoop") {
     
-    if (region_param %in% c("CONUS", "EAST")) {
+    if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
       writeRaster(r, file = paste0(outnam, "_tile", tile_num),
                   format = "GTiff",  datatype = datatype, overwrite = TRUE)
       outnam2 <- paste0("\n\nSaving raster brick: ", 
@@ -492,7 +488,16 @@ Mat_to_rast <- function(m, ext, template) {
 
 # Base features used for all summary (PNG) maps in "PlotMap" function
 Base_map <- function(df) {
-  p <- ggplot(states, aes(x = long, y = lat)) + 
+  
+  # Data to use for base map (i.e. target region - will usually be US states)
+  if (region_param == "EUROPE") {
+    base_map <- map_data("world") 
+  } else {
+    base_map <- map_data("state")
+  }
+  
+  # Base map plot
+  p <- ggplot(base_map, aes(x = long, y = lat)) + 
     geom_raster(data = df, aes(x = x, y = y, fill = value)) + 
     geom_path(aes(group = group), color = "black", lwd = 0.4) +
     coord_quickmap(xlim = c(REGION@xmin, REGION@xmax), 
@@ -1221,13 +1226,12 @@ PlotMap_stress <- function(r, d, max1, max2, titl, lgd, outfl) {
 params_dir <- "/usr/local/dds/DDRP_B1/spp_params/"
 
 #### * Weather inputs and outputs - climate data w/subdirs 4-digit year ####
-# If outdir has 2 consec. numbers, assume webuser; otherwise just use base dir
-# if (grepl("16", start_year, perl = TRUE)) {
-#   base_dir <- "/mnt/ssd1/PRISM/"
-# } else {
+if (forecast_data == "PRISM") {
   base_dir <- "/data/PRISM/"
-#}
-
+} else if (forecast_data == "EOBS") {
+  base_dir <- "/data/europe/"
+}
+  
 prism_dir <- paste0(base_dir, start_year)
 
 cat("\nBASE DIR: ", base_dir, "\n")
@@ -1575,28 +1579,43 @@ cat("\nDone writing metadata file\n\n", forecast_data, " DATA PROCESSING\n", sep
 # (forecast_data = PRISM, or forecast_data = NMME)
 
 # Loop through each needed variable and create a list of needed files
-vars <- c("tmin", "tmax", "tmean", "tdmean", "ppt")
-fls_list <- c("tminfiles", "tmaxfiles", "tmeanfiles", "tdmeanfiles", "pptfiles")
+if (forecast_data == "PRISM") {
+  vars <- c("tmin", "tmax", "tmean", "tdmean", "ppt")
+  fls_list <- c("tminfiles", "tmaxfiles", "tmeanfiles", "tdmeanfiles", "pptfiles")
+} else if (forecast_data == "EOBS") {
+  vars <- c("tmin", "tmax", "hum", "ppt")
+  fls_list <- c("tminfiles", "tmaxfiles", "humfiles", "pptfiles")
+}
 
 for (i in seq_along(vars)) {
+  
   # Create list of files
+  if (forecast_data == "PRISM") {
+    fl_pat <- glob2rx(paste0("*PRISM_", vars[i], "*", start_year, "*.bil$*"))
+  } else if (forecast_data == "EOBS") {
+    fl_pat <- glob2rx(paste0("*EOBS_", vars[i], "*", start_year, "*.grd$*"))
+  }
+  
   fls <- list.files(
     path = prism_dir, 
-    pattern = glob2rx(paste0("*PRISM_", vars[i], "*", start_year, "*.bil$*")), 
+    pattern = fl_pat, 
     all.files = FALSE, full.names = TRUE, recursive = TRUE
-    )
+  )
   
   # Exit program if files are missing
   if (length(fls) == 0) {
     LogWrap("", paste0("Could not find ", vars[i], " files - exiting program"), "\n")
     cat("Could not find ", vars[i],  " files - exiting program\n") 
     q()
-    
-    assign(fls_list[i], fls)
   }
   
-  # Extract highest quality files and assign object name to list
-  fls_best <- ExtractBestPRISM(fls, forecast_data, keep_leap)[start_doy:end_doy]
+  # PRISM: extract highest quality files and assign object name to list
+  if (forecast_data == "PRISM") {
+    fls_best <- ExtractBestPRISM(fls, forecast_data, keep_leap)[start_doy:end_doy]
+  } else {
+    fls_best <- fls[start_doy:end_doy]
+  }
+  
   assign(fls_list[i], fls_best)
   
 }
@@ -1676,6 +1695,7 @@ cat("\nFinished loading ", forecast_data, " files for ",
 # First define with extent of the region
 #### Set up regions - use switch() (works like a single use hash) ##
 REGION <- switch(region_param,
+                 "EUROPE"       = extent(-11, 45, 35.5, 71.5),
                  "CONUS"        = extent(-125.0,-66.5,24.0,50.0),
                  "WEST"         = extent(-125.0, -102, 31.1892, 49.4),
                  "EAST"         = extent(-106.8, -66.5, 24.54, 49.4),
@@ -1749,7 +1769,7 @@ dataType(template) <- "INT2U"
 ncores <- detectCores()
 RegCluster(round(ncores/4))
 
-if (region_param %in% c("CONUS", "EAST")) {
+if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
   
   # Split template (2 pieces per side), resulting in 4 tiles
   tile_list <- SplitRas(template, ppside = 2, save = FALSE, plot = FALSE) 
@@ -1778,50 +1798,62 @@ if (region_param %in% c("CONUS", "EAST")) {
       m <- as.matrix(crop(raster(tmax), tile))
     }
   
-  tmean_list <- foreach(tile = template, .packages = "raster") %:% 
-    foreach(tmean = tmeanfiles, .packages = "raster", .inorder = TRUE) %dopar% { 
-      m <- as.matrix(crop(raster(tmean), tile))
-    }
-  
-  tdmean_list <- foreach(tile = template, .packages = "raster") %:% 
-    foreach(tdmean = tdmeanfiles, .packages = "raster", .inorder = TRUE) %dopar% { 
-      m <- as.matrix(crop(raster(tdmean), tile))
-    }
-  
   ppt_list <- foreach(tile = template, .packages = "raster") %:% 
     foreach(ppt = pptfiles, .packages = "raster", .inorder = TRUE) %dopar% { 
       m <- as.matrix(crop(raster(ppt), tile))
     }
+      
+  if (forecast_data == "PRISM") {
+    
+    tmean_list <- foreach(tile = template, .packages = "raster") %:% 
+      foreach(tmean = tmeanfiles, .packages = "raster", .inorder = TRUE) %dopar% { 
+        m <- as.matrix(crop(raster(tmean), tile))
+      }
+    
+    tdmean_list <- foreach(tile = template, .packages = "raster") %:% 
+      foreach(tdmean = tdmeanfiles, .packages = "raster", .inorder = TRUE) %dopar% { 
+        m <- as.matrix(crop(raster(tdmean), tile))
+      }
+    
+  } else if (forecast_data == "EOBS") {
+    
+    hum_list <- foreach(tile = template, .packages = "raster") %:% 
+      foreach(hum = humfiles, .packages = "raster", .inorder = TRUE) %dopar% { 
+        m <- as.matrix(crop(raster(hum), tile))
+      }
+    
+    }
 
-# If region is not CONUS or EAST, simply crop temp files by the single template
-} else {
-  LogWrap("", paste("Cropping tmax, tmin, tmean, tdmean and ppt tiles for", 
-                     region_param), "\n")
-  cat("\nCropping tmax, tmin, tmean, tdmean and ppt tiles for", region_param, "\n")
+  # If region is not CONUS or EAST, simply crop temp files by the single template
+  } else {
+    LogWrap("", paste("Cropping tmax, tmin, tmean, tdmean and ppt tiles for", 
+                       region_param), "\n")
+    cat("\nCropping tmax, tmin, tmean, tdmean and ppt tiles for", region_param, "\n")
+    
+    tmin_list <- foreach(tmin = tminfiles, .packages = "raster", 
+                         .inorder = TRUE) %dopar% {
+      m <- as.matrix(crop(raster(tmin), template))
+    }
   
-  tmin_list <- foreach(tmin = tminfiles, .packages = "raster", 
-                       .inorder = TRUE) %dopar% {
-    m <- as.matrix(crop(raster(tmin), template))
-  }
+    tmax_list <- foreach(tmax = tmaxfiles, .packages = "raster", 
+                         .inorder = TRUE) %dopar% {
+      m <- as.matrix(crop(raster(tmax), template))
+    }
+    
+    tmean_list <- foreach(tmean = tmeanfiles, .packages = "raster", 
+                         .inorder = TRUE) %dopar% {
+      m <- as.matrix(crop(raster(tmean), template))
+                           }
+    tdmean_list <- foreach(tdmean = tdmeanfiles, .packages = "raster", 
+                         .inorder = TRUE) %dopar% {
+      m <- as.matrix(crop(raster(tdmean), template))
+    }
+    
+    ppt_list <- foreach(ppt = pptfiles, .packages = "raster", 
+                         .inorder = TRUE) %dopar% {
+      m <- as.matrix(crop(raster(ppt), template))
+    }
 
-  tmax_list <- foreach(tmax = tmaxfiles, .packages = "raster", 
-                       .inorder = TRUE) %dopar% {
-    m <- as.matrix(crop(raster(tmax), template))
-  }
-
-  tmean_list <- foreach(tmean = tmeanfiles, .packages = "raster", 
-                       .inorder = TRUE) %dopar% {
-    m <- as.matrix(crop(raster(tmean), template))
-                       }
-  tdmean_list <- foreach(tdmean = tdmeanfiles, .packages = "raster", 
-                       .inorder = TRUE) %dopar% {
-    m <- as.matrix(crop(raster(tdmean), template))
-  }
-
-  ppt_list <- foreach(ppt = pptfiles, .packages = "raster", 
-                       .inorder = TRUE) %dopar% {
-    m <- as.matrix(crop(raster(ppt), template))
-  }
 }
 
 LogWrap("", "Done cropping climate data", "\n")
@@ -1987,13 +2019,20 @@ DailyLoop <- function(tile_num, template) {
   #### * Step through days ####
   # tryCatch(
   for (d in 1:length(sublist)) {
+  #print(d)
     #tic()
-    if (region_param %in% c("CONUS", "EAST")) {
+    if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
       tmax <- as.numeric(tmax_list[[tile_num]][[d]])
       tmin <- as.numeric(tmin_list[[tile_num]][[d]])
-      tmean <- as.numeric(tmean_list[[tile_num]][[d]])
-      tdmean <- as.numeric(tdmean_list[[tile_num]][[d]])
       ppt <- as.numeric(ppt_list[[tile_num]][[d]])
+      
+      if (forecast_data == "PRISM") {
+        tmean <- as.numeric(tmean_list[[tile_num]][[d]])
+        tdmean <- as.numeric(tdmean_list[[tile_num]][[d]])
+      } else if (forecast_data == "EOBS") {
+        relhum <- as.numeric(hum_list[[tile_num]][[d]])
+      }
+
     } else {
       tmax <- as.numeric(tmax_list[[d]])
       tmin <- as.numeric(tmin_list[[d]])
@@ -2026,7 +2065,11 @@ DailyLoop <- function(tile_num, template) {
       # (combo of Lifestage and NumGen) are calculated using the "triangle"
       # DD calculation, which is relevant to daily DDs, not hourly
       dd_tmp <- TriDD(tmax, tmin, ls_ldt_larv, ls_udt_larv) # REPLACE ME
-      relhum <- calcrelhum(tmean, tdmean)
+      
+      if (forecast_data == "PRISM") {
+        relhum <- calcrelhum(tmean, tdmean)
+      } 
+      
       LW <- calcLW(ppt, relhum)
       DDs <- calcDDs(tmax, tmin)
       DDLW <- LW * dd_tmp/24
@@ -2257,22 +2300,22 @@ DailyLoop <- function(tile_num, template) {
     
     # Calculate cumulative infection risk relevant to "today" (ref_date for
     # post-hoc analysis, or the current day for a current-year analysis)
-    if (sublist[d] == grep(threedayago, dats)) {
+    if (d == grep(threedayago, dats)) {
       CUMDDLW_threedayago <- CUMDDLW
     }
     
-    if (sublist[d] == grep(twodayago, dats)) {
+    if (d == grep(twodayago, dats)) {
       CUMDDLW_twodayago <- CUMDDLW
     }
     
-    if (sublist[d] == grep(today, dats)) {
+    if (d == grep(today, dats)) {
       CUMDDLW_3dayRsk <- CUMDDLW - CUMDDLW_threedayago
       CUMDDLW_2dayRsk <- CUMDDLW - CUMDDLW_twodayago
     }
     
     #### * Save data for certain days, specified by sampling frequency ####
     # Data from last sampling day of year is also saved
-    if (sublist[d] %in% sample_pts) {
+    if (d %in% sample_pts) {
       # Convert Lifestage and Numgen matrices to rasters and put into a brick
       # Added rasters for BOXB (CUMDDs, CUMDDLW)
       mat_list <- list(Lifestage, NumGen, StageCount, DDtotal, CUMDDs, CUMDDLW)
@@ -2459,7 +2502,7 @@ DailyLoop <- function(tile_num, template) {
     nam <- outnams3[i]
     log_capt <- CapTitl(gsub("_", " ", outnams3[i]))
     
-    if (region_param %in% c("CONUS", "EAST")) {
+    if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
       SaveRaster(risk_rast, "DailyLoop", tile_num, nam, "FLT4S",
                  paste("-", log_capt))
     } else {
@@ -2491,7 +2534,7 @@ DailyLoop <- function(tile_num, template) {
       names(pem_rast) <- names(pem_mats[i])
       nam <- names(pem_rast)
       
-      if (region_param %in% c("CONUS", "EAST")) {
+      if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
         SaveRaster(pem_rast, "DailyLoop", tile_num, nam, "INT2U",
                    paste("-", "Pest event map -", nam))
       } else {
@@ -2527,11 +2570,11 @@ LogWrap("\n", "DAILY TIME STEP", "\n")
 LogWrap("", "Starting daily time step", "") 
 cat("\nStarting daily time step\n")
 
-# Run the DailyLoop function. If region is CONUS/EAST, then the 4 tiles will
-# be run in parallel to significantly increase speed. 
+# Run the DailyLoop function. If region is CONUS/EAST/EUROPE, then the 4 tiles
+# will be run in parallel to significantly increase speed. 
 tryCatch( { 
   
-  if (region_param %in% c("CONUS", "EAST")) {
+  if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
     # Why does foreach not work for running DailyLoop in parallel???
     # Have to "mclapply" instead, which does not run on Windows
     RegCluster(4) # 4 cores are needed
@@ -2546,7 +2589,6 @@ tryCatch( {
       }, mc.cores = 4)
     
     stopCluster(cl)
-    rm(cl)
 
   } else {
     # "tile_num" is NA because there are no tiles
@@ -2582,7 +2624,7 @@ dir.create("Misc_output")
 
 #### * Merge and delete tiles (CONUS/EAST) ####
 # If CONUS or EAST, merge the tiles
-if (region_param %in% c("CONUS", "EAST")) {
+if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
   
   LogWrap("\n", paste("Merging tiles for", region_param), "\n\n")
   cat("\nMerging tiles for", region_param, "\n")
@@ -2609,7 +2651,6 @@ if (region_param %in% c("CONUS", "EAST")) {
   }
   
   stopCluster(cl)
-  rm(cl)
   LogWrap("\n", "Done merging and deleting tiles", "")
   cat("\nDone merging and deleting tiles\n")
 
@@ -2697,7 +2738,6 @@ stg_vals <- data.frame("stg_name" = gsub("O", "", stgorder),
                                 (stg_name == "larvae") ~ 2,
                                 (stg_name == "pupae") ~ 3,
                                 (stg_name == "adults") ~ 4)) 
-
 
 # For each date in a date chunk, plot and save summary maps for main outputs
 # (The only exceptions are PEMs and StageCount maps which are dealt with below)
@@ -2824,7 +2864,6 @@ summary_maps <- foreach(dat = dats_list, .packages = pkgs,
 #}
 
 stopCluster(cl)
-rm(cl)
 
 # Generation and stage maps (StageCount) require some extra processing
 
@@ -2915,7 +2954,6 @@ for (i in 1:length(StageCt_lst)) {
 }
 
 stopCluster(cl)
-rm(cl)
 
 # Log messages
 if (exclusions_stressunits) {
@@ -2986,28 +3024,31 @@ if (pems) {
     PEM_brk <- brick(raster::stack(files_by_type))
     PEM_brk[PEM_brk == 0] <- NA
     
-    # Create event label to be used for making summary maps, and plot map
-    eventLabel_df <- dplyr::filter(PEM_event_labels, PEM_types == type) %>% 
-      dplyr::select(finalLabel) %>%
-      mutate(., finalLabel = ifelse(type == OW_pem, paste("Date of OW gen.", 
-                                            OWEventLabel), finalLabel))          
-    eventLabel <- paste(eventLabel_df$finalLabel)
-    
-    # Plot summary maps; if PEM has climate stress excl. modify labels/outname
-    if (grepl("Excl", type)) {
-      titl <- paste0(eventLabel, " w/ climate stress exclusion")
-    } else {
-      titl <- eventLabel
+    # Do not produce maps if all values are NA
+    if (any(values(PEM_brk) >= 0, na.rm = TRUE)) {
+      # Create event label to be used for making summary maps, and plot map
+      eventLabel_df <- dplyr::filter(PEM_event_labels, PEM_types == type) %>% 
+        dplyr::select(finalLabel) %>%
+        mutate(., finalLabel = ifelse(type == OW_pem, paste("Date of OW gen.", 
+                                              OWEventLabel), finalLabel))          
+      eventLabel <- paste(eventLabel_df$finalLabel)
+      
+      # Plot summary maps; if PEM has climate stress excl. modify labels/outname
+      if (grepl("Excl", type)) {
+        titl <- paste0(eventLabel, " w/ climate stress exclusion")
+      } else {
+        titl <- eventLabel
+      }
+             
+      PlotMap(PEM_brk, last(dats2), titl, paste(eventLabel, sep = " "), 
+              paste0("Misc_output/", type))
+      }
     }
-           
-    PlotMap(PEM_brk, last(dats2), titl, paste(eventLabel, sep = " "), 
-            paste0("Misc_output/", type))
-    }
+
+  stopCluster(cl)
+  
 }
 
-stopCluster(cl)
-rm(cl)
-  
 # Log file messages
 if (pems == 1) {
   LogWrap("\n\n", "Done with Pest Event Maps", "\n")
