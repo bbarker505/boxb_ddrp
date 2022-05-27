@@ -9,11 +9,6 @@ pkgs <- c("doParallel", "dplyr", "foreach", "ggplot2", "ggthemes",
           "stringr", "tidyr", "tictoc", "tools", "toOrdinal")
 ld_pkgs <- lapply(pkgs, library, character.only = TRUE) # load them
 
-# Bring in states feature for summary maps (PNG files), extract the lower 
-# 48 states, and project it. Requires these libraries: "mapdata" and "maptools."
-cat("Downloading US states feature\n")
-states <- map_data("state")
-
 # Start timing the model run
 tic("Total run time")
 
@@ -24,7 +19,8 @@ tic("Total run time")
 ########  Tyson Wepprich for APHIS PPQ and IPM needs ###########################
 ################################################################################
 
-# Last modified by B. Barker on 5/24/21
+# Last modified by B. Barker on 9/13/21
+# - Added hack for using climate normal data (PRISM and EOBS) - ln 1331
 
 # 11v. This is for development of a plant disease risk version of DDRP so use prism data such as:
 #   A) Add Drystress looking similar to Heat and Cold (Chill) stress, using relhum=func(tmean,tdmean)
@@ -39,43 +35,47 @@ tic("Total run time")
 #### # Uses "optparse" package, a command line parser similar to Python's
 option_list <- list(
   make_option(c("--spp"), action = "store", type = "character", 
-              default = NA, help = "species parameter file name"),
+              help = "species parameter file name"),
   make_option(c("--forecast_data"), action = "store", type = "character", 
-              default = NA, help = "weather data for forecast"),
+              help = "weather data for forecast"),
   make_option(c("--start_year"),  action = "store", type = "character", 
-              default = NA, help = "start year"),
+              help = "start year"),
   make_option(c("--start_doy"), action = "store", type = "integer", 
-              default = NA, help = "start day of year"),
+              help = "start day of year"),
   make_option(c("--end_doy"),  action = "store", type = "integer",
-              default = NA, help = "end day of year"),
+              help = "end day of year"),
   make_option(c("--keep_leap"), action = "store", type = "integer", 
-              default = NA, help = "should leap day be kept? 0=no, 1=yes"),
+              default = 0, help = "should leap day be kept? 0=no, 1=yes"),
   make_option(c("--region_param"), type = "character", action = "store", 
-              default = NA, help = "study region: CONUS, EAST, WEST, or 
+              help = "study region: EUROPE, CONUS, EAST, WEST, or 
               state (2-letter abbr.)"),
   make_option(c("--exclusions_stressunits"), type = "integer", action = "store",
-              default = NA, help = "0 = off, 1 = on"),
+              default = 0, help = "0 = off, 1 = on"),
+  make_option(c("--ref_date"), type = "character", action = "store",
+              help = "reference date for 2 and 3 day risk maps (e.g. 20210527)"),
   make_option(c("--pems"), type = "integer", action = "store", 
-              default = NA, help = "0 = off, 1 = on"),
+              help = "0 = off, 1 = on"),
   make_option(c("--mapA"), type = "integer", action = "store", 
-              default = NA, help = "0 = off, 1 = on"),
+              help = "0 = off, 1 = on"),
   make_option(c("--mapE"), type = "integer", action = "store", 
-              default = NA, help = "0 = off, 1 = on"),
+              help = "0 = off, 1 = on"),
   make_option(c("--mapL"), type = "integer", action = "store", 
-              default = NA, help = "0 = off, 1 = on"),
+              help = "0 = off, 1 = on"),
   make_option(c("--mapP"), type = "integer", action = "store", 
-              default = NA, help = "0 = off, 1 = on"),
+              help = "0 = off, 1 = on"),
   make_option(c("--out_dir"), type = "character", action = "store", 
-              default = NA, help = "name of out directory"),
+              help = "name of out directory"),
   make_option(c("--out_option"), type = "integer", action = "store", 
-              default = NA, help = "sampling frequency: 1 = 30 days; 
+              help = "sampling frequency: 1 = 30 days; 
               2 = 14 days; 3 = 10 days; 4 = 7 days; 5 = 2 days; 6 = 1 day")
 )
 
 # Read in commands 
-# If command line isn't used, then opts list elements will be NA
+# If command line isn't used, then out_dir will be NULL (several other params too)
 opts <- parse_args(OptionParser(option_list = option_list))
-if (!is.na(opts[1])) {
+parser <- OptionParser(option_list = option_list)
+
+if (!is.null(opts$out_dir)) {
   spp <- opts$spp
   forecast_data <- opts$forecast_data
   start_year <- opts$start_year
@@ -84,6 +84,7 @@ if (!is.na(opts[1])) {
   keep_leap <- opts$keep_leap
   region_param <- opts$region_param
   exclusions_stressunits <- opts$exclusions_stressunits
+  ref_date <- opts$ref_date
   pems <- opts$pems
   mapA <- opts$mapA
   mapE <- opts$mapE
@@ -95,22 +96,22 @@ if (!is.na(opts[1])) {
 } else {
   #### * Default values for params, if not provided in command line ####
   spp           <- "BOXB" # Default species to use
-  forecast_data <- "PRISM" # Forecast data to use (PRISM or NMME)
+  forecast_data <- "PRISM_800m" # Forecast data to use (PRISM or NMME)
   start_year    <- "2020" # Year to use
-  start_doy     <- 1 # Start day of year          
-  end_doy       <- 365 # End day of year - need 365 if voltinism map 
+  start_doy     <- 183 # Start day of year          
+  end_doy       <- 244 # End day of year - need 365 if voltinism map 
   keep_leap     <- 1 # Should leap day be kept?
   region_param  <- "OR" # Region [CONUS, EAST, WEST, or state (2-letter abbr.)]
-  exclusions_stressunits    <- 0 # Turn on/off climate stress unit exclusions
+  exclusions_stressunits    <- 1 # Turn on/off climate stress unit exclusions
+  ref_date      <- "20200730" # Reference date for 2 and 3 day risk maps
   pems          <- 1 # Turn on/off pest event maps
   mapA          <- 1 # Make maps for adult stage
   mapE          <- 0 # Make maps for egg stage
   mapL          <- 0 # Make maps for larval stage
   mapP          <- 0 # Make maps for pupal stage
-  out_dir       <- "BOXB_test2" # Output dir
-  out_option    <- 1 # Sampling frequency
+  out_dir       <- "BOXB_800m_test" # Output dir
+  out_option    <- 4 # Sampling frequency
 }
-
 
 #### (2). FUNCTIONS AND PLOT SETTINGS -----
 
@@ -118,6 +119,14 @@ if (!is.na(opts[1])) {
 LogWrap <- function(brk1, txt, brk2) { 
   cat(brk1, str_wrap(txt, width = 80), brk2, sep = "", 
       file = Model_rlogging, append = TRUE) 
+}
+
+# Captilizes first letter in a sentence (replacement for "str_to_sentence" for
+# older versions of R and/or "stringr" package)
+CapTitl <- function(y) {
+  y2 <- tolower(gsub("_", " ", y))
+  substr(y2, 1, 1) <- toupper(substr(y2, 1, 1))
+  y2
 }
 
 # * DD Calculation Methods funcs ###
@@ -310,34 +319,35 @@ ExtractBestPRISM <- function(files, forecast_data, keep_leap) {
 Rast_Subs_Excl <- function(brk, tile_num, type) {
   
   # Get AlLEXCL_brick
-  if (region_param %in% c("CONUS", "EAST")) {
+  if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
     AllEXCL_brick <- brick(paste0("All_Stress_Excl_tile", tile_num,".tif"))
   } else {
     AllEXCL_brick <- brick("All_Stress_Excl.tif")
   }
   
   # If PEM, then only take the last layer of allEXCL_brk (last date)
-  # because PEMs are created only for the last date
-  if (grepl("PEM", names(brk), ignore.case = FALSE)) {
-    AllEXCL_brick <- AllEXCL_brick[[last(nlayers(AllEXCL_brick))]] 
+  # because PEMs are created only for the last date. If 2- or 3-day cum
+  # risk maps, take only the layer for the corresponding date
+  if (nlayers(brk) == 1) {
+    if (grepl("PEM", names(brk), ignore.case = FALSE)) {
+      AllEXCL_brick <- AllEXCL_brick[[last(nlayers(AllEXCL_brick))]] 
+    } else if (names(brk) == "Cum_Inf_Risk_3day") {
+      AllEXCL_brick <- AllEXCL_brick[[grep(threedayago, dats2)]]
+    } else if (names(brk) == "Cum_Inf_Risk_2day") {
+      AllEXCL_brick <- AllEXCL_brick[[grep(twodayago, dats2)]]
+    }
   }
-  
+
   # Identify pixels that have moderate (-1) or severe (-2) stress values.
   # The corresponding pixel in the input raster brick will be replaced with a
   # stress value. 
   lapply(1:nlayers(brk), function(lyr) {
-
+    
     # For each layer in the brick, get the corresponding layer
     # in the All Stress Exclusion brick (AllEXCL_brick)
-    # If PEM, then only take the last layer of allEXCL_brk (last date)
-    # because PEMs are created only for the last date
-    if (deparse(substitute(brk)) == "PEM") {
-      brk_lyr <- last(nlayers(AllEXCL_brick))
-    } else {
-      brk_lyr <- brk[[lyr]]
-      Excl <- AllEXCL_brick[[lyr]] 
-    }
-    
+    brk_lyr <- brk[[lyr]]
+    Excl <- AllEXCL_brick[[lyr]] 
+
     # Replace pixels in brick layer with the stress values in
     # areas of overlap
     if (type == "Excl2") {
@@ -360,7 +370,7 @@ SaveRaster <- function(r, step, tile_num, outnam, datatype, log_capt) {
   
   if (step == "DailyLoop") {
     
-    if (region_param %in% c("CONUS", "EAST")) {
+    if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
       writeRaster(r, file = paste0(outnam, "_tile", tile_num),
                   format = "GTiff",  datatype = datatype, overwrite = TRUE)
       outnam2 <- paste0("\n\nSaving raster brick: ", 
@@ -478,7 +488,16 @@ Mat_to_rast <- function(m, ext, template) {
 
 # Base features used for all summary (PNG) maps in "PlotMap" function
 Base_map <- function(df) {
-  p <- ggplot(states, aes(x = long, y = lat)) + 
+  
+  # Data to use for base map (i.e. target region - will usually be US states)
+  if (region_param == "EUROPE") {
+    base_map <- map_data("world") 
+  } else {
+    base_map <- map_data("state")
+  }
+  
+  # Base map plot
+  p <- ggplot(base_map, aes(x = long, y = lat)) + 
     geom_raster(data = df, aes(x = x, y = y, fill = value)) + 
     geom_path(aes(group = group), color = "black", lwd = 0.4) +
     coord_quickmap(xlim = c(REGION@xmin, REGION@xmax), 
@@ -522,8 +541,15 @@ PlotMap <- function(r, d, titl, lgd, outfl) {
   sp <- paste0(gsub(pattern = "_", replacement = " ", fullname),":")
   nam <- deparse(substitute(r)) # Get name of raster, capitalize first letter
   dat <- as.character(format(strptime(d,format="%Y%m%d"), format="%m/%d/%Y")) # format the date
-  titl <- paste(titl,dat,sep=" ")
-  titl_orig <- titl # Used for some log captions
+  
+  # Format title - will be slightly different for 2 and 3 day cumulative risk maps
+  if (grepl("Cum_Inf_Risk_2day|Cum_Inf_Risk_3day", outfl)) {
+    today_dat2 <- as.character(format(today_dat, format="%m/%d/%Y")) 
+    titl <- paste0(titl, " (", dat, " to ", today_dat2, ")")
+  } else {
+    titl <- paste(titl, dat, sep=" ")
+  }
+
   subtitl <- paste("Maps and modeling",
                    format(Sys.Date(), "%m/%d/%Y"), str_wrap("by Oregon State University IPPC 
     USPEST.ORG and USDA-APHIS-PPQ; climate data from OSU PRISM Climate Group",
@@ -546,16 +572,19 @@ PlotMap <- function(r, d, titl, lgd, outfl) {
   #### DD accumulations ##
   if (grepl("DDtotal|Cum_Inf_Risk|Cum_DDs", outfl)) {
     
+    df$value <- round(df$value) # For summary maps, use integer values
+    
     # Log captions
     if (grepl("DDtotal", outfl)) {
-      log_capt <- paste("- Number of accumulated degree-days on", dateForlog)
-    } else if (grepl("Cum_Inf_Risk", outfl)) {
-      log_capt <- paste("- Number of infection risk units on", dateForlog)
+      log_capt <- paste("- Number of accum. degree-days on", dateForlog)
+    } else if (grepl("Cum_Inf_Risk_Total", outfl)) {
+      log_capt <- paste("- Number of accum. infection risk units on", dateForlog)
     } else if (grepl("Cum_DDs", outfl)) {
-      log_capt <- paste("- Number of accumulated plant disease degree-days on", dateForlog)
-    }
-    if (exclusions_stressunits & grepl("Cum_Inf_Risk", outfl)) {
-      log_capt <- paste("- No. of infection risk units with climate stress excl. on", dateForlog)
+      log_capt <- paste("- Number of accum. plant disease degree-days on", dateForlog)
+    } else if (grepl("Cum_Inf_Risk_2day|Cum_Inf_Risk_3day", outfl)) {
+      day <- str_split_fixed(outfl, "_", 4)[,4]
+      log_capt <- paste("- Number of accum. plant disease degree-days",
+                        gsub("day", " days", day), "ago to current day")
     }
         
     # Use pre-defined bins
@@ -563,15 +592,34 @@ PlotMap <- function(r, d, titl, lgd, outfl) {
       bins <- c("0", "1-250", "251-500", "501-1000", "1001-2000", "2001-3000", 
                 "3001-4000", "4001-5000", "5001-6000", "6001-7000", ">7000")
       vals <- c(250, 500, 1000, 2000, 3000, 4000, 5000, 6000, 7000)
-    } else if (grepl("Cum_Inf_Risk", outfl)) {
+      
+    } else if (grepl("Cum_Inf_Risk_Total", outfl)) {
       bins <- c("0", "1-5", "6-10", "11-20", "21-30", "31-40", "41-50", 
                 "51-75", "76-125", "126-200",">200") 
       vals <- c(5, 10, 20, 30, 40, 50, 75, 125, 200)
+      
     } else if (grepl("Cum_DDs", outfl)) {
       bins <- c("0", "1-400", "401-1000", "1001-2000", "2001-3000", "3001-4000", 
                 "4001-5000", "5001-7000", "7001-9000", "9001-11000", ">11000")
       vals <- c(400, 1000, 2000, 3000, 4000, 5000, 7000, 9000, 11000)
-     }
+      
+    } else if (grepl("Cum_Inf_Risk_2day|Cum_Inf_Risk_3day", outfl)) {
+      
+      unique_vals <- unique(values(r))[!is.na(unique(values(r)))]
+      unique_vals <- length(unique_vals[!unique_vals <= 0])
+      n_unique_vals <- length(unique_vals)
+      
+      if (n_unique_vals <= 10) {
+        bins <- as.character(0:10)
+        vals <- 1:10
+        } else if (n_unique_vals > 10 & n_unique_vals <= 20) {
+          bins <- c("0", "1", "2", "3", "4", "5", "8", "10", "12", "16", "20")
+          vals <- c(1, 2, 3, 4, 5, 8, 10, 12, 16, 20)
+        } else if (n_unique_vals > 20) {
+          bins <- seq(from = 0, to = n_unique_vals, length.out = 11)
+        }
+    
+    }
     
     # Assign bins to data and order factor levels
     df2 <- df %>% 
@@ -603,7 +651,7 @@ PlotMap <- function(r, d, titl, lgd, outfl) {
     } else {
       bins <- factor(bins, levels = bins)
     }
-    
+ 
     # Set data frame factors and set names for color palette
     df2$value <- factor(df2$value, levels = levels(bins))
     cols <- setNames(cols, levels(df2$value))
@@ -621,12 +669,12 @@ PlotMap <- function(r, d, titl, lgd, outfl) {
     #### Lifestage ##
   } else if (grepl("Lifestage", outfl)) {
     
-    # Log captions
     if (grepl("Lifestage_Excl1|Lifestage_Excl2", outfl)) { 
-      log_capt <- paste("-", titl_orig, "with climate stress excl. on", dateForlog)
-    } else {
-      log_capt <- paste("-", titl_orig, "on", dateForlog)
-    }
+        log_capt <- paste("-", 
+          str_wrap("Lifestage with climate stress excl. on", width = 80), dateForlog)
+      } else {
+        log_capt <- paste("-", "Lifestage on", dateForlog)
+      }   
     
     # Slightly modify "stg_vals" dataframe for plotting purposes here
     stg_vals2 <- stg_vals %>% # Add "OW" back on to the OW stage
@@ -842,8 +890,8 @@ PlotMap <- function(r, d, titl, lgd, outfl) {
     #### Climate stress exclusion maps ##
   } else if (grepl("Heat_Stress_Excl|Cold_Stress_Excl|Dry_Stress_Excl|All_Stress_Excl", outfl)) {
     
-    # Log captione
-    log_capt <- paste("-", titl_orig, dateForlog)
+    # Log caption
+    log_capt <- paste("-", titl)
 
     # Re-assign values (0, -1, -2) to their corresponding description
     df <- mutate(df, value = factor(ifelse(value == -2, "excl.-severe", 
@@ -868,7 +916,7 @@ PlotMap <- function(r, d, titl, lgd, outfl) {
   } else if (grepl("PEM", outfl)) {
     
     # Caption for log file
-    log_capt <- paste("-", titl_orig) 
+    log_capt <- paste("-", titl) 
     
     # Optimize code in this section - probably more efficient ways to do
     # Make a start year in numeric format
@@ -1178,21 +1226,31 @@ PlotMap_stress <- function(r, d, max1, max2, titl, lgd, outfl) {
 params_dir <- "/usr/local/dds/DDRP_B1/spp_params/"
 
 #### * Weather inputs and outputs - climate data w/subdirs 4-digit year ####
-# If outdir has 2 consec. numbers, assume webuser; otherwise just use base dir
-if (grepl("16", start_year, perl = TRUE)) {
-  base_dir <- "/mnt/ssd1/PRISM/"
-} else {
+if (forecast_data == "PRISM") {
   base_dir <- "/data/PRISM/"
+} else if (forecast_data == "EOBS") {
+  base_dir <- "/data/europe/EOBS/"
+} else if (forecast_data == "ClimateEU") {
+  base_dir <- "/data/europe/ClimateEU/" 
+} else if (forecast_data == "PRISM_800m") {
+  base_dir <- "/data/PRISM/PRISM_800m/"
 }
-
-prism_dir <- paste0(base_dir, start_year)
+  
+forecast_dir <- paste0(base_dir, start_year)
 
 cat("\nBASE DIR: ", base_dir, "\n")
-cat("\nWORKING DIR: ", prism_dir, "\n")
+cat("\nWORKING DIR: ", forecast_dir, "\n")
 
 #### * Output directory, log file, and error message file ####
 # MUST remove .tif files or script will crash during processing because it will 
 # try to analyze previously processed results. 
+
+# First make sure out_dir was specified - if not, the program quits
+if (!(exists("out_dir"))) {
+    cat("\nNo out_dir specified; exiting program") 
+    print_help(parser)
+    q() 
+}
 
 #output_dir <- paste0("/home/httpd/html/CAPS/", output_dir)
 output_dir <- paste0("/usr/local/dds/DDRP_B1/DDRP_results/", out_dir)
@@ -1209,7 +1267,8 @@ if (file.exists(output_dir)) {
   
   # Copy dirs and files to backup dir
   flsToCopy <- list.files(output_dir, full.names = TRUE)
-  flsToCopy <- str_subset(flsToCopy, pattern = backup_dir, negate = TRUE)
+  flsToCopy <- flsToCopy[!grepl(pattern = backup_dir, flsToCopy)]
+  #flsToCopy <- str_subset(flsToCopy, pattern = backup_dir, negate = TRUE)
   file.copy(flsToCopy, backup_dir, recursive = TRUE)
   
   # Delete remaining folders and files now that they have been backed up
@@ -1243,7 +1302,7 @@ cat(paste0(rep("#", 39), collapse = ""), "\n",
 
 # Record PRISM and output dir
 cat("BASE DIR: ", base_dir, "\n", file = Model_rlogging, append = TRUE)
-cat("WORKING DIR: ", prism_dir, "\n", file = Model_rlogging, append = TRUE)
+cat("WORKING DIR: ", forecast_dir, "\n", file = Model_rlogging, append = TRUE)
 
 # Push out a message file with all R error messages
 #msg <- file(paste0("/home/httpd/html/CAPS/", output_dir), open = "wt")
@@ -1270,12 +1329,12 @@ if (file.exists(species_params)) {
   q()  # No reason to keep going without any params
 }
 
-# Change year to numeric if it's a specific year
-# If using climate normals, there may be letters in folder name
-if (!grepl("[A-z]", start_year)) {
-  start_year <- as.numeric(start_year)
-} else {
-  start_year <- 1975 # 
+# Define start_year and ref_date for runs that use climate normals
+# TO DO: this is just a hack to get around the required inputs for typical 
+# runs that use single year datasets...figure out better solution?
+if (grepl("[A-z]", start_year)) {
+  start_year <- as.numeric(str_sub(ref_date, 1, 4))
+  #ref_dat <- paste0(start_year, "0601")
 }
 
 # Set up start and stop day of year depending on whether it's a leap year or
@@ -1304,6 +1363,7 @@ if (is.numeric(start_year)) {
 }
 
 # Check for appropriate command line parameters
+
 # Exit program if no pest event maps have been specified but users want pest
 # event maps (pems = 1)
 if (pems == 1 & !(1 %in% c(mapA, mapE, mapL, mapP))) {
@@ -1311,23 +1371,62 @@ if (pems == 1 & !(1 %in% c(mapA, mapE, mapL, mapP))) {
                      exiting program", "")
   cat("\n", str_wrap("No pest event maps (mapA, mapE, mapL, mapP) specified; 
           exiting program", width = 80), sep = "")
+  print_help(parser)
   q()
 }
 
 # Exit program if an incorrect sampling frequency has been specified
-if (out_option %in% !c(1, 2, 3, 4, 5, 6)) {
-  LogWrap("", "Out_option =", out_option, "is unacceptable; exiting program", "\n")
-  cat("Out_option =", out_option, "is unacceptable; exiting program\n")
-  q() 
+if (!exists("out_option")) {
+    LogWrap("\n", paste("No out_option specified; exiting program"), "\n")
+    cat("\nNo out_option specified; exiting program") 
+    print_help(parser)
+    q() 
+} else if (!(out_option %in% c(1, 2, 3, 4, 5, 6))) {
+    LogWrap("\n", paste("out_option =", out_option, 
+                      "is unacceptable; exiting program"), "\n")
+    cat("\nout_option is unacceptable; exiting program")
+    print_help(parser)
+    q() 
 }
 
 # Exit if end day of year is inappropriate
 if (end_doy > 366) {
   LogWrap("\n", paste("End day of year (end_doy) of", end_doy, "is 
-                     unacceptable; exiting program"), "")
+                     unacceptable; exiting program"), "\n")
   cat("\n", str_wrap(paste("End day of year (end_doy) of", end_doy, "is 
-                     unacceptable; exiting program"), width = 80), sep = "")
+                     unacceptable; exiting program\n"), width = 80), sep = "")
   q()
+}
+
+# A reference date must be provided if model is being run for a previous year
+if (!(exists("out_option")) & 
+   strftime(Sys.time(), format = "%Y") != start_year) {
+  LogWrap("\n", "Mandatory reference date not found for 
+          post-hoc analysis (prev. year); exiting program", "")
+  cat("\n", str_wrap("Mandatory reference date not found for 
+          post-hoc analysis (prev. year); exiting program"), width = 80, sep = "")
+  print_help(parser)
+  q()
+}
+
+# The reference date must fall within the start_doy and end_doy, and it must 
+# occur within the start_year.
+if (exists("ref_date")) {
+  ref_doy <- yday(strptime(ref_date, format = "%Y%m%d"))
+  if (!(between(ref_doy, start_doy, end_doy))) {
+      LogWrap("\n", "Day of year of ref_date must fall between start_doy and 
+              end_doy; exiting program", "")
+      cat("\n", str_wrap("Day of year of ref_date must fall between start_doy 
+                         and end_doy; exiting program"), width = 80, sep = "")
+      q()
+  }
+  if (str_sub(ref_date, 1, 4) != start_year) {
+      LogWrap("\n", "Year of ref_date must be the same as start_year; 
+              exiting program", "")
+      cat("\n", str_wrap("Year of ref_date must be the same as start_year; 
+              exiting program"), width = 80, sep = "")
+      q()
+  }
 }
 
 # Create a list of days to use for daily loop
@@ -1423,7 +1522,7 @@ cat("\n\n Stage durations in degree-days (DDs)",
 
 # Document climate stress exclusion parameter values, if applicable
 if (exclusions_stressunits) {
-  cat("\n \n Climate stress parameters",
+  cat("\n\n Climate stress parameters",
       "\n Lower Cold Threshold:", coldstress_threshold, 
       "\n Upper Heat Threshold:", heatstress_threshold,
       "\n Upper Dry Threshold:", drystress_threshold,
@@ -1437,9 +1536,19 @@ if (exclusions_stressunits) {
       file = metadata, append = TRUE)
 }
 
+# Risk map reference date
+if (is.null(opts$ref_date)) {
+  cat("\n\n Reference date for 2 and 3 day risk maps:", 
+      strftime(Sys.time(), format = "%Y%m%d"), file = metadata, append = TRUE)
+} else {
+  cat("\n\n Reference date for 2 and 3 day risk maps:", 
+      format(strptime(ref_date, format = "%Y%m%d"), format = "%m/%d/%Y"), 
+      file = metadata, append = TRUE)
+}
+
 # Document Pest Event Map parameter values, if applicable
 if (pems) {
-  cat("\n \n Pest Event Map parameters",
+  cat("\n\n Pest Event Map parameters",
       "\n Number of generations to make Pest Event Maps (PEMs): ", PEMnumgens,
       "\n Egg Event DDs and Label: ", eggEventDD, " (", eggEventLabel,")", 
       "\n Larvae Event DDs and Label: ", larvaeEventDD, " (", larvaeEventLabel, ")",
@@ -1474,28 +1583,47 @@ cat("\nDone writing metadata file\n\n", forecast_data, " DATA PROCESSING\n", sep
 # (forecast_data = PRISM, or forecast_data = NMME)
 
 # Loop through each needed variable and create a list of needed files
-vars <- c("tmin", "tmax", "tmean", "tdmean", "ppt")
-fls_list <- c("tminfiles", "tmaxfiles", "tmeanfiles", "tdmeanfiles", "pptfiles")
+if (forecast_data %in% c("PRISM", "PRISM_800m")) {
+  vars <- c("tmin", "tmax", "tmean", "tdmean", "ppt")
+  fls_list <- c("tminfiles", "tmaxfiles", "tmeanfiles", "tdmeanfiles", "pptfiles")
+} else if (forecast_data %in% c("EOBS", "ClimateEU")) {
+  vars <- c("tmin", "tmax", "hum", "ppt")
+  fls_list <- c("tminfiles", "tmaxfiles", "humfiles", "pptfiles")
+} 
 
 for (i in seq_along(vars)) {
+  
   # Create list of files
+  if (forecast_data %in% c("PRISM", "PRISM_800m")) {
+    fl_pat <- glob2rx(paste0("*PRISM_", vars[i], "*", start_year, "*.bil$*"))
+  } else if (forecast_data == "EOBS") {
+    fl_pat <- glob2rx(paste0("*EOBS_", vars[i], "*", start_year, "*.grd$*"))
+  } else if (forecast_data == "ClimateEU") {
+    fl_pat <- glob2rx(paste0("*ClimateEU_", vars[i], "*", start_year, "*.bil$*"))
+  }
+  
   fls <- list.files(
-    path = prism_dir, 
-    pattern = glob2rx(paste0("*PRISM_", vars[i], "*", start_year, "*.bil$*")), 
-    all.files = FALSE, full.names = TRUE, recursive = TRUE
-    )
+    path = forecast_dir, 
+    pattern = fl_pat, 
+    all.files = FALSE, full.names = TRUE, recursive = TRUE, ignore.case = TRUE
+  )
   
   # Exit program if files are missing
   if (length(fls) == 0) {
     LogWrap("", paste0("Could not find ", vars[i], " files - exiting program"), "\n")
     cat("Could not find ", vars[i],  " files - exiting program\n") 
     q()
-    
-    assign(fls_list[i], fls)
   }
   
-  # Extract highest quality files and assign object name to list
-  fls_best <- ExtractBestPRISM(fls, forecast_data, keep_leap)[start_doy:end_doy]
+  # PRISM: extract highest quality files and assign object name to list
+  # Don't do this step for daily climate averages (have word "daily" in file name)
+  if (forecast_data == "PRISM" & !any(grep("daily", fls))) {
+    fls_best <- ExtractBestPRISM(fls, forecast_data, keep_leap)[start_doy:end_doy]
+  } else {
+    #fls_best <- fls[start_doy:end_doy]
+    fls_best <- fls
+  }
+  
   assign(fls_list[i], fls_best)
   
 }
@@ -1522,57 +1650,45 @@ if (out_option == 1) {
 
 # * Dates and sampling ####
 # Make vector of dates to use when processing results 
-# The current date will be sampled if it's the current year AND if 
-# the current day falls within the range of start_doy and end_doy.
-# The last date of year will always be sampled.
-# Using "unique" will only keep date if it doesn't already occur in vector
-# This happens if the end day of year is a multiple of the sampling frequency 
-# (e.g. 1 to 300, w/ a 30 day sampling frequency), or if the current date falls
-# within the sampling frequency
-today <- strftime(Sys.time(), format = "%Y%m%d")
-onedayago <- as.character(as.numeric(today) - 1) 
-twodayago <- as.character(as.numeric(today) - 2) # change when NDFD used
-current_year <- strftime(Sys.time(), format = "%Y")
-
-if (start_year == current_year & 
-    yday(Sys.time()) >= start_doy &
-    yday(Sys.time()) <= end_doy) {
-  dats2 <- sort(as.numeric(
-    unique(c(dats[seq(0, length(dats), sample_freq)], today, 
-             onedayago, twodayago, last(dats))))
-    )
-  LogWrap("\n", paste("Sampling every", sample_freq, "days between", 
-                      first(dats), "and", last(dats)), "\n")
-  LogWrap("", paste0("Sampling also includes today (", today, ") one day ago (",
-                    onedayago, ") and two days ago (", twodayago, ")"), "\n")
-  
+# The current date will be sampled if it's the current year AND if the current 
+# day falls within the range of start_doy and end_doy. For 2 and 3 day disease
+# risk maps, 2 days before (twodaysago)and 3 days ago (threedayago) will be 
+# sampled. If start_year is not the current year, then the ref_date parameter
+# will be used to define "twodayago" and "threedayago". 
+# The last date of the sampling period will always be sampled.
+if (exists("ref_date")) {
+  today <- ref_date
 } else {
-  dats2 <- sort(as.numeric(unique(c(dats[seq(0, length(dats), sample_freq)],
-                                    last(dats)))))
-  LogWrap("\n", paste("Sampling every", sample_freq, "days between", 
-                      first(dats), "and", last(dats)), "\n")
+  today <- strftime(Sys.time(), format = "%Y%m%d")
 }
 
+# Risk map sample dates (change this once NDFD implemented)
+today_dat <- as.Date(today, format = "%Y%m%d") 
+twodayago <- strftime(today_dat - 2, format = "%Y%m%d") 
+threedayago <- strftime(today_dat - 3, format = "%Y%m%d")
+
+# Log messages
+LogWrap("", paste("Sampling every", sample_freq, "days between", 
+                    first(dats), "and", last(dats)), "\n")
+LogWrap("", paste0("Sampling also includes today (", today, ") two days ago (",
+                  twodayago, ") and three days ago (", threedayago, ")"), "\n")
+
+# Using "unique" will only keep date if it doesn't already occur in vector
+# This happens if the end day of year is a multiple of the sampling frequency 
+# (e.g. 1 to 300, w/ a 30 day sampling frequency), or if the "today", "twodayago",
+# or "threedayago" dates fall within the already specified sampling frequency.
+dats2 <- sort(as.numeric(
+  unique(c(dats[seq(0, length(dats), sample_freq)], today, threedayago, twodayago,
+           last(dats))))
+  )
 dats2 <- as.character(dats2) # Need to be in character format for plotting
 num_dats <- length(dats2) # How many sampled dates? 
 
 # Create vector of days in the sublist that will be sampled (rasters are saved 
-# for those days) in the Daily Loop, and also tack on the last day in the list. 
-sample_pts <- c(sublist[seq(0, length(sublist), sample_freq)],
-                last(sublist))
-
-# Add the present day if DDRP run is being run for the current year AND if 
-# the current day falls within the range of start_doy and end_doy. 
-if (start_year == current_year & 
-    yday(Sys.time()) >= start_doy &
-    yday(Sys.time()) <= end_doy) {
-  today_doy <- strftime(Sys.time(), format = "%j") # Day of year
-  sample_pts <- sort(as.numeric(unique(c(sample_pts, today_doy))))
-}
-
-# Keep only unique sampling points (there may be duplicates for example
-# if the present day is already in the list).
-sample_pts <- unique(sample_pts)
+# for those days) in the Daily Loop, and also tack on today, threedayago, 
+# twodayago, and last day. Keep only unique sampling points 
+# (there may be duplicates for example if the present day is already in the list).
+sample_pts <- unique(map_dbl(dats2, grep, dats))
 
 # Log file and terminal messages
 LogWrap("", paste0("Finished loading ", forecast_data, " files for ", 
@@ -1587,6 +1703,7 @@ cat("\nFinished loading ", forecast_data, " files for ",
 # First define with extent of the region
 #### Set up regions - use switch() (works like a single use hash) ##
 REGION <- switch(region_param,
+                 "EUROPE"       = extent(-11, 45, 35.5, 71.5),
                  "CONUS"        = extent(-125.0,-66.5,24.0,50.0),
                  "WEST"         = extent(-125.0, -102, 31.1892, 49.4),
                  "EAST"         = extent(-106.8, -66.5, 24.54, 49.4),
@@ -1596,7 +1713,8 @@ REGION <- switch(region_param,
                  "SOUTHCENTRAL" = extent(-83.6,-78.3,31.8,35.3),
                  "NORTHCENTRAL" = extent(-104.3,-80.2,35.7,49.7),
                  "SOUTHEAST"    = extent(-107.1,-75.0,24.1,39.6),
-                 "NORTHEAST"    = extent(-84.2,-64.3,36.9,48.1),
+                 "NORTHEAST"    = extent(-84.2,-64.3,41.2,48.1),
+                 "WORWA"        = extent(-124.7294, -120.5, 41.98, 49.1664),
                  "AL"           = extent(-88.5294,-84.7506,30.1186,35.1911),
                  "AR"           = extent(-94.8878,-89.5094,32.8189,36.6936),
                  "AZ"           = extent(-115, -108.98, 31.2, 37),
@@ -1660,7 +1778,7 @@ dataType(template) <- "INT2U"
 ncores <- detectCores()
 RegCluster(round(ncores/4))
 
-if (region_param %in% c("CONUS", "EAST")) {
+if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
   
   # Split template (2 pieces per side), resulting in 4 tiles
   tile_list <- SplitRas(template, ppside = 2, save = FALSE, plot = FALSE) 
@@ -1675,9 +1793,15 @@ if (region_param %in% c("CONUS", "EAST")) {
   rm(tile_list)
   
   # Crop climate files by each template tile
-  LogWrap("", paste("Cropping tmax, tmin, tmean, tdmean and ppt tiles for", 
+  if (forecast_data %in% c("PRISM", "PRISM_800m")) {
+    LogWrap("", paste("Cropping tmax, tmin, tmean, tdmean and ppt tiles for", 
+                      region_param), "\n")
+    cat("\nCropping tmax, tmin, tmean, tdmean and ppt files for", region_param, "\n")
+  } else if (forecast_data == "EOBS") {
+    LogWrap("", paste("Cropping tmax, tmin, and hum tiles for", 
                     region_param), "\n")
-  cat("\nCropping tmax, tmin, tmean, tdmean and ppt for", region_param, "\n")
+    cat("\nCropping tmax, tmin, and hum files for", region_param, "\n")
+  }
 
   tmin_list <- foreach(tile = template, .packages = "raster") %:% 
     foreach(tmin = tminfiles, .packages = "raster", .inorder = TRUE) %dopar% { 
@@ -1689,51 +1813,64 @@ if (region_param %in% c("CONUS", "EAST")) {
       m <- as.matrix(crop(raster(tmax), tile))
     }
   
-  tmean_list <- foreach(tile = template, .packages = "raster") %:% 
-    foreach(tmean = tmeanfiles, .packages = "raster", .inorder = TRUE) %dopar% { 
-      m <- as.matrix(crop(raster(tmean), tile))
-    }
-  
-  tdmean_list <- foreach(tile = template, .packages = "raster") %:% 
-    foreach(tdmean = tdmeanfiles, .packages = "raster", .inorder = TRUE) %dopar% { 
-      m <- as.matrix(crop(raster(tdmean), tile))
-    }
-  
   ppt_list <- foreach(tile = template, .packages = "raster") %:% 
     foreach(ppt = pptfiles, .packages = "raster", .inorder = TRUE) %dopar% { 
       m <- as.matrix(crop(raster(ppt), tile))
     }
+      
+  if (forecast_data %in% c("PRISM", "PRISM_800m")) {
+    
+    tmean_list <- foreach(tile = template, .packages = "raster") %:% 
+      foreach(tmean = tmeanfiles, .packages = "raster", .inorder = TRUE) %dopar% { 
+        m <- as.matrix(crop(raster(tmean), tile))
+      }
+    
+    tdmean_list <- foreach(tile = template, .packages = "raster") %:% 
+      foreach(tdmean = tdmeanfiles, .packages = "raster", .inorder = TRUE) %dopar% { 
+        m <- as.matrix(crop(raster(tdmean), tile))
+      }
+    
+  } else if (forecast_data %in% c("EOBS", "ClimateEU")) {
+    
+    hum_list <- foreach(tile = template, .packages = "raster") %:% 
+      foreach(hum = humfiles, .packages = "raster", .inorder = TRUE) %dopar% { 
+        m <- as.matrix(crop(raster(hum), tile))
+      }
+    
+    }
 
-# If region is not CONUS or EAST, simply crop temp files by the single template
-} else {
-  LogWrap("", paste("Cropping tmax, tmin, tmean, tdmean and ppt tiles for", 
-                     region_param), "\n")
-  cat("\nCropping tmax, tmin, tmean, tdmean and ppt tiles for", region_param, "\n")
+  # If region is not CONUS, EAST, or EUROPE, the it is a US region or state 
+  # so simply crop temp files by the single template (i.e. no tiles)
+  } else {
+    
+    tmin_list <- foreach(tmin = tminfiles, .packages = "raster", 
+                         .inorder = TRUE) %dopar% {
+      m <- as.matrix(crop(raster(tmin), template))
+    }
   
-  tmin_list <- foreach(tmin = tminfiles, .packages = "raster", 
-                       .inorder = TRUE) %dopar% {
-    m <- as.matrix(crop(raster(tmin), template))
-  }
+    tmax_list <- foreach(tmax = tmaxfiles, .packages = "raster", 
+                         .inorder = TRUE) %dopar% {
+      m <- as.matrix(crop(raster(tmax), template))
+    }
+    
+    tmean_list <- foreach(tmean = tmeanfiles, .packages = "raster", 
+                         .inorder = TRUE) %dopar% {
+      m <- as.matrix(crop(raster(tmean), template))
+                           }
+    tdmean_list <- foreach(tdmean = tdmeanfiles, .packages = "raster", 
+                         .inorder = TRUE) %dopar% {
+      m <- as.matrix(crop(raster(tdmean), template))
+    }
+    
+    ppt_list <- foreach(ppt = pptfiles, .packages = "raster", 
+                         .inorder = TRUE) %dopar% {
+      m <- as.matrix(crop(raster(ppt), template))
+    }
 
-  tmax_list <- foreach(tmax = tmaxfiles, .packages = "raster", 
-                       .inorder = TRUE) %dopar% {
-    m <- as.matrix(crop(raster(tmax), template))
-  }
-
-  tmean_list <- foreach(tmean = tmeanfiles, .packages = "raster", 
-                       .inorder = TRUE) %dopar% {
-    m <- as.matrix(crop(raster(tmean), template))
-                       }
-  tdmean_list <- foreach(tdmean = tdmeanfiles, .packages = "raster", 
-                       .inorder = TRUE) %dopar% {
-    m <- as.matrix(crop(raster(tdmean), template))
-  }
-
-  ppt_list <- foreach(ppt = pptfiles, .packages = "raster", 
-                       .inorder = TRUE) %dopar% {
-    m <- as.matrix(crop(raster(ppt), template))
-  }
 }
+
+LogWrap("", "Done cropping climate data", "\n")
+cat("\nDone cropping climate data\n")
 
 ## (7). DAILY LOOP FUNCTION -----
 
@@ -1789,6 +1926,18 @@ DailyLoop <- function(tile_num, template) {
     heatstressMAX2    <- heatstress_units_max2 # Max heat before all die
     heatEXCL          <- as.matrix(template)  # Heat stress exclusions
     # BOXB moisture stress templates
+    ppt1            <- as.matrix(template)  # use for 9 day avg ppt
+    ppt2            <- as.matrix(template)  # use for 9 day avg ppt
+    ppt3            <- as.matrix(template)  # use for 9 day avg ppt
+    ppt4            <- as.matrix(template)  # use for 9 day avg ppt
+    ppt5            <- as.matrix(template)  # use for 9 day avg ppt
+    ppt6            <- as.matrix(template)  # use for 9 day avg ppt
+    ppt7            <- as.matrix(template)  # use for 9 day avg ppt
+    ppt8            <- as.matrix(template)  # use for 9 day avg ppt
+    ppta1           <- as.matrix(template)  # use to avg ppt over 9 days
+    pptindex         <- as.matrix(template)  # use to calc ppt index
+    drymask         <- as.matrix(template)  # binary mask for daily dry units
+    drystressppt    <- as.matrix(template)  # count of daily dry   units
     drymask         <- as.matrix(template)  # binary mask for daily dry units
     drystress       <- as.matrix(template)  # count of daily dry   units
     drystressTHRESH  <- as.matrix(template)  # mask for drystress units threshold
@@ -1895,13 +2044,20 @@ DailyLoop <- function(tile_num, template) {
   #### * Step through days ####
   # tryCatch(
   for (d in 1:length(sublist)) {
+  #print(d)
     #tic()
-    if (region_param %in% c("CONUS", "EAST")) {
+    if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
       tmax <- as.numeric(tmax_list[[tile_num]][[d]])
       tmin <- as.numeric(tmin_list[[tile_num]][[d]])
-      tmean <- as.numeric(tmean_list[[tile_num]][[d]])
-      tdmean <- as.numeric(tdmean_list[[tile_num]][[d]])
       ppt <- as.numeric(ppt_list[[tile_num]][[d]])
+      
+      if (forecast_data %in% c("PRISM", "PRISM_800m")) {
+        tmean <- as.numeric(tmean_list[[tile_num]][[d]])
+        tdmean <- as.numeric(tdmean_list[[tile_num]][[d]])
+      } else if (forecast_data == "EOBS") {
+        relhum <- as.numeric(hum_list[[tile_num]][[d]])
+      }
+
     } else {
       tmax <- as.numeric(tmax_list[[d]])
       tmin <- as.numeric(tmin_list[[d]])
@@ -1934,7 +2090,11 @@ DailyLoop <- function(tile_num, template) {
       # (combo of Lifestage and NumGen) are calculated using the "triangle"
       # DD calculation, which is relevant to daily DDs, not hourly
       dd_tmp <- TriDD(tmax, tmin, ls_ldt_larv, ls_udt_larv) # REPLACE ME
-      relhum <- calcrelhum(tmean, tdmean)
+      
+      if (forecast_data %in% c("PRISM", "PRISM_800m")) {
+        relhum <- calcrelhum(tmean, tdmean)
+      } 
+      
       LW <- calcLW(ppt, relhum)
       DDs <- calcDDs(tmax, tmin)
       DDLW <- LW * dd_tmp/24
@@ -1970,16 +2130,37 @@ DailyLoop <- function(tile_num, template) {
                        Cond(heatunitsCUM >= heatstressMAX1, -1, 0))
 
       # For BOXB
-      # BOXB Changes start: need to fix equations once we have relhum
+      # BOXB Changes start: combine dry accum based on both relhum and ppt
       ##-- DDLW CALCULATION??
       ##-- Dry Stress Accumulation
+      
+      # 1st: RH dry stress
       drymask <- relhum < drystressTHRESH  # make todays dry mask
-      drystress <- drymask * ((abs(drystressTHRESH - relhum) - 500 * ppt)) # compute todays dry stress DDs
-      #drystress <- drystress - 500 * ppt   # ppt is hundreds of an inch, it reduces drystess; TODO: calibrate
-      drystress <- Cond(drystress >= 0, drystress, 0)
-      dryunitsCUM <- dryunitsCUM + drystress
-      dryEXCL <- Cond(dryunitsCUM >= drystressMAX2,-2,
-                      Cond(dryunitsCUM >= drystressMAX1,-1,0))
+      #drystress <- drymask * ((abs(drystressTHRESH - relhum) - 500 * ppt)) # compute todays dry stress DDs
+      drystress <- drymask * (drystressTHRESH - relhum) # todays RH based on dry stress DDs
+      
+      # 2nd: ppt dry stress index based on inverse of 9 days avg precip
+      # "nextgen" include these ideas: 1) use a 9 day product to smooth out 
+      # variable precip vs. single days; 2) calibrate to compare only ppt to only 
+      # relhum based drystress (note: will have small underestimate error for first 
+      # 8 days model runs but should not be a problem)
+      ppta1 <- (ppt + ppt1 + ppt2 + ppt3 + ppt4 + ppt5 + ppt6 + ppt7 + ppt8)/9
+      ppt8 <- ppt7
+      ppt7 <- ppt6
+      ppt6 <- ppt5
+      ppt5 <- ppt4
+      ppt4 <- ppt3
+      ppt3 <- ppt2
+      ppt2 <- ppt1
+      ppt1 <- ppt
+      # Calculate and calibrate ppt index to be weighted ca. 50:50 ppt vs. relhum
+      pptindex <- 20 * (1/(ppta1+1))  # use 34(too high); 18(a bit too low) 20 good
+      # Add combo relhum-based and ppt-based drystress
+      dryunitsCUM <- dryunitsCUM + (drystress * 0.50 + pptindex * 0.50)
+      dryEXCL <- Cond(dryunitsCUM >= drystressMAX2, -2, 
+                       Cond(dryunitsCUM >= drystressMAX1, -1, 0))
+      
+      # END new drystress for BOXB
       
       # All climate stress exclusion for BOXB 
       AllEXCL <- Cond((dryEXCL == 0) & (coldEXCL == 0) & (heatEXCL == 0),0,
@@ -2162,10 +2343,25 @@ DailyLoop <- function(tile_num, template) {
     # Stage Count analysis and raster brick. The generation numbers is divided
     # by 10 so that the gen # is a decimal (e.g. Lifestage 4 of 2nd gen = 4.2)
     StageCount <- NumGen + Lifestage/10
-  
+    
+    # Calculate cumulative infection risk relevant to "today" (ref_date for
+    # post-hoc analysis, or the current day for a current-year analysis)
+    if (d == grep(threedayago, dats)) {
+      CUMDDLW_threedayago <- CUMDDLW
+    }
+    
+    if (d == grep(twodayago, dats)) {
+      CUMDDLW_twodayago <- CUMDDLW
+    }
+    
+    if (d == grep(today, dats)) {
+      CUMDDLW_3dayRsk <- CUMDDLW - CUMDDLW_threedayago
+      CUMDDLW_2dayRsk <- CUMDDLW - CUMDDLW_twodayago
+    }
+    
     #### * Save data for certain days, specified by sampling frequency ####
     # Data from last sampling day of year is also saved
-    if (sublist[d] %in% sample_pts) {
+    if (d %in% sample_pts) {
       # Convert Lifestage and Numgen matrices to rasters and put into a brick
       # Added rasters for BOXB (CUMDDs, CUMDDLW)
       mat_list <- list(Lifestage, NumGen, StageCount, DDtotal, CUMDDs, CUMDDLW)
@@ -2308,19 +2504,19 @@ DailyLoop <- function(tile_num, template) {
   # For BOXB
   SaveRaster(CUMDDs_brick, "DailyLoop", tile_num, "CumDDs", "INT2S",
              paste("-", "Plant disease degree day unit accum. for all", num_dats, "dates"))
-  SaveRaster(CUMDDLW_brick, "DailyLoop", tile_num, "Cum_Inf_Risk", "INT2S",
+  SaveRaster(CUMDDLW_brick, "DailyLoop", tile_num, "Cum_Inf_Risk_Total", "FLT4S",
              paste("-", "Plant disease cum. infection risk for all", num_dats, "dates"))
-  
+
   # If exclusions_stressunits = 1, then save stress unit and exclusions bricks
   if (exclusions_stressunits) {
     
     # Save climate stress exclusion and unit bricks
-    brk_list1 <- c(coldunitsCUM_brick, coldEXCL_brick, heatunitsCUM_brick,
+    brk_list1 <- list(coldunitsCUM_brick, coldEXCL_brick, heatunitsCUM_brick,
                    heatEXCL_brick, dryunitsCUM_brick, dryEXCL_brick, AllEXCL_brick)
     outnams1 <- c("Cold_Stress_Units", "Cold_Stress_Excl", "Heat_Stress_Units", 
                   "Heat_Stress_Excl", "Dry_Stress_Units", "Dry_Stress_Excl", "All_Stress_Excl")
     for (i in 1:length(brk_list1)) {
-      log_capt <- str_to_sentence(gsub("_", " ", outnams1[i]))
+      log_capt <- CapTitl(gsub("_", " ", outnams1[i]))
       SaveRaster(brk_list1[[i]], "DailyLoop", tile_num, outnams1[i], 
                   "INT2S", paste("-", log_capt, "for all", num_dats, "dates"))
     }
@@ -2329,34 +2525,66 @@ DailyLoop <- function(tile_num, template) {
     # climate stress exclusion values (-2 = moderate stress, -1 = severe stress only)
     brk_list2 <- rep(list(Lifestage_brick, NumGen_brick, CUMDDLW_brick, StageCount_brick), 2)
     type_list <- c(rep("Excl1", 4), rep("Excl2", 4))
-    outnams2 <- c("Lifestage_Excl1", "NumGen_Excl1", "Cum_Inf_Risk_Excl1", "StageCount_Excl1",
-      "Lifestage_Excl2", "NumGen_Excl2", "Cum_Inf_Risk_Excl2", "StageCount_Excl2")
-    formats <- c(c(rep("INT2S", 3), "FLT4S"), c(rep("INT2S", 3), "FLT4S"))
+    outnams2 <- c("Lifestage_Excl1", "NumGen_Excl1", "Cum_Inf_Risk_Total_Excl1", 
+                  "StageCount_Excl1", "Lifestage_Excl2", "NumGen_Excl2", 
+                  "Cum_Inf_Risk_Total_Excl2", "StageCount_Excl2")
+    formats <- rep(c(rep("INT2S", 2), rep("FLT4S", 2)), 2)
     for (i in 1:length(brk_list2)) {
       brk_excl <- brick(Rast_Subs_Excl(brk_list2[[i]], tile_num, type_list[i]))
-      log_capt <- str_to_sentence(gsub("_", " ", outnams2[i]))
+      log_capt <- CapTitl(gsub("_", " ", outnams2[i]))
       SaveRaster(brk_excl, "DailyLoop", tile_num, outnams2[i], formats[i], 
                  paste("-", log_capt, "for all", num_dats, "dates"))
+    }
+  }
+  
+  # Convert 2 and 3 day cumulative infection risk (relative to today) outputs to
+  # rasters with and without climate stess exclusions
+  risk_mats <- list(CUMDDLW_3dayRsk, CUMDDLW_2dayRsk)
+  risk_rasts <- lapply(risk_mats, Mat_to_rast, ext = ext, template = template)
+  outnams3 <- c("Cum_Inf_Risk_3day", "Cum_Inf_Risk_2day")
+  
+  for (i in 1:length(risk_rasts)) {
+    risk_rast <- risk_rasts[[i]]
+    nam <- outnams3[i]
+    log_capt <- CapTitl(gsub("_", " ", outnams3[i]))
+    
+    if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
+      SaveRaster(risk_rast, "DailyLoop", tile_num, nam, "FLT4S",
+                 paste("-", log_capt))
+    } else {
+      SaveRaster(risk_rast, "DailyLoop", NA, nam, "FLT4S",
+                 paste("-", log_capt))
+    }
+    
+    # 2 and 3 day risk maps with climate stress exclusions
+    if (exclusions_stressunits) {
+      names(risk_rast) <- nam
+      risk_excl1 <- brick(Rast_Subs_Excl(risk_rast, tile_num, "Excl1"))
+      SaveRaster(risk_excl1, "DailyLoop", tile_num, paste0(nam, "_Excl1"), "FLT4S",
+                 paste("-", log_capt, "with climate stress exclusions"))
+      risk_excl2 <- brick(Rast_Subs_Excl(risk_rast, tile_num, "Excl2"))
+      SaveRaster(risk_excl2, "DailyLoop", tile_num, paste0(nam, "_Excl2"), "FLT4S", 
+                 paste("-", log_capt, "with climate stress exclusions"))
     }
   }
   
   # If Pest Event Maps are turned on, save rasters including (optional) ones with
   # climate stress exclusions
   if (pems) {
-    pem_list <- mget(ls(pattern = "PEMe|PEMl|PEMp|PEMa"))
+    pem_mats <- mget(ls(pattern = "PEMe|PEMl|PEMp|PEMa"))
     
     # Convert each matrix in the list to a raster and save it
-    for (i in 1:length(pem_list)) {
-      pem_mat <- pem_list[[i]]
+    for (i in 1:length(pem_mats)) {
+      pem_mat <- pem_mats[[i]]
       pem_rast <- Mat_to_rast(pem_mat, ext, template)
-      names(pem_rast) <- names(pem_list[i])
+      names(pem_rast) <- names(pem_mats[i])
       nam <- names(pem_rast)
       
-      if (region_param %in% c("CONUS", "EAST")) {
+      if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
         SaveRaster(pem_rast, "DailyLoop", tile_num, nam, "INT2U",
                    paste("-", "Pest event map -", nam))
       } else {
-        SaveRaster(pem_rast, "DailyLoop", NA, names(pem_list[i]), "INT2U",
+        SaveRaster(pem_rast, "DailyLoop", NA, nam, "INT2U",
                    paste("-", "Pest event map -", nam))
       }
       
@@ -2365,11 +2593,11 @@ DailyLoop <- function(tile_num, template) {
         pem_excl1 <- brick(Rast_Subs_Excl(pem_rast, tile_num, "Excl1"))
         SaveRaster(pem_excl1, "DailyLoop", tile_num, 
                    paste0(nam, "_Excl1"), "INT2S", 
-                   paste("-", log_capt, "for all", num_dats, "dates"))
+                   paste("-", "Pest event map -", nam, "w/ climate stress exclusions"))
         pem_excl2 <- brick(Rast_Subs_Excl(pem_rast, tile_num, "Excl2"))
         SaveRaster(pem_excl2, "DailyLoop", tile_num, 
                    paste0(nam, "_Excl2"), "INT2S", 
-                   paste("-", log_capt, "for all", num_dats, "dates"))
+                   paste("-", "Pest event map -", nam, "w/ climate stress exclusions"))
         }
       
     }
@@ -2386,12 +2614,13 @@ DailyLoop <- function(tile_num, template) {
 tic("Daily loop run time") # Start timing the daily loop run-time
 LogWrap("\n", "DAILY TIME STEP", "\n")
 LogWrap("", "Starting daily time step", "") 
- 
-# Run the DailyLoop function. If region is CONUS/EAST, then the 4 tiles will
-# be run in parallel to significantly increase speed. 
+cat("\nStarting daily time step\n")
+
+# Run the DailyLoop function. If region is CONUS/EAST/EUROPE, then the 4 tiles
+# will be run in parallel to significantly increase speed. 
 tryCatch( { 
   
-  if (region_param %in% c("CONUS", "EAST")) {
+  if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
     # Why does foreach not work for running DailyLoop in parallel???
     # Have to "mclapply" instead, which does not run on Windows
     RegCluster(4) # 4 cores are needed
@@ -2419,7 +2648,11 @@ tryCatch( {
 })
 
 # Remove memory eating climate raster lists
-rm(tmin_list, tmax_list, tmean_list, tdmean_list, ppt_list, template)
+if (forecast_data %in% c("PRISM", "PRISM_800m")) {
+  rm(tmin_list, tmax_list, tmean_list, tdmean_list, ppt_list, template)
+} else if (forecast_data %in% c("EOBS", "ClimateEU")) {
+  rm(tmin_list, tmax_list, hum_list, template)
+}
 
 # Document daily loop execution time
 loop_exectime <- toc(quiet = TRUE)
@@ -2427,7 +2660,7 @@ loop_exectime <- (loop_exectime$toc - loop_exectime$tic) / 60
 
 LogWrap("\n\n", paste0("Daily loop done (run time = ", 
                      round(loop_exectime, digits = 2), " min)"), "\n") 
-LogWrap("\n", "FINAL ANALYSES AND MAP PRODUCTION", "\n")
+LogWrap("\n", "FINAL ANALYSES AND MAP PRODUCTION", "")
 cat("\nDaily loop done (run time = ", round(loop_exectime, digits = 2), " min)",
     "\n\nFINAL ANALYSES AND MAP PRODUCTION\n", sep = "")
 
@@ -2441,7 +2674,7 @@ dir.create("Misc_output")
 
 #### * Merge and delete tiles (CONUS/EAST) ####
 # If CONUS or EAST, merge the tiles
-if (region_param %in% c("CONUS", "EAST")) {
+if (region_param %in% c("CONUS", "EAST", "EUROPE")) {
   
   LogWrap("\n", paste("Merging tiles for", region_param), "\n\n")
   cat("\nMerging tiles for", region_param, "\n")
@@ -2468,7 +2701,6 @@ if (region_param %in% c("CONUS", "EAST")) {
   }
   
   stopCluster(cl)
-  rm(cl)
   LogWrap("\n", "Done merging and deleting tiles", "")
   cat("\nDone merging and deleting tiles\n")
 
@@ -2529,14 +2761,15 @@ mytheme <- theme(
 
 ### * Generate summary maps ####
 if (exclusions_stressunits) {
-  LogWrap("\n\n", paste0("### SUMMARY MAPS: DDTOTAL, CUMDDs, CUMDDLW, LIFESTAGE, 
-  NUMGEN, CLIMATE STRESS EXCL., CLIMATE STRESS UNITS ###"), "")
-  cat("\n", str_wrap("### SUMMARY MAPS: DDTOTAL, CUMDDs, CUMDDLW, LIFESTAGE, 
-  NUMGEN, CLIMATE STRESS EXCL., CLIMATE STRESS UNITS ###", width = 80), "\n", sep = "")
+  LogWrap("\n\n", paste0("### SUMMARY MAPS: DDtotal, CumDDs, Total Inf. Risk, 3-day Inf.
+          Risk, 2-day Inf. Risk, Lifestage, No. of Gens, Climate Stress Excl., and
+          Climate Stress Units ###"), "")
 } else {
-  LogWrap("\n\n", "### SUMMARY MAPS: DDTOTAL, CUMDDs, CUMDDLW, LIFESTAGE, AND NUMGEN", "")
-  cat("\nSUMMARY MAPS: SUMMARY MAPS: DDTOTAL, CUMDDs, CUMDDLW, LIFESTAGE, AND NUMGEN\n")
+  LogWrap("\n\n", "### SUMMARY MAPS: DDtotal, CumDDs, Total Inf. Risk, 3-day Inf.
+          Risk, 2-day Inf. Risk, Lifestage, and No. of Gens", "")
 }
+
+cat("\nGenerating summary maps:\n")
 
 # Split up the dates into chunks (no chunks have single dates - this results in
 # warning messages. Splitting up the dates avoids overloading the server w/ 
@@ -2562,88 +2795,125 @@ RegCluster(round(ncores/3))
 
 #for (dat in dats_list) {
 summary_maps <- foreach(dat = dats_list, .packages = pkgs,
-                         .inorder = TRUE) %:%
+                       .inorder = TRUE) %:%
   foreach(d = unname(unlist(dat)), .packages = pkgs, .inorder = TRUE) %dopar% {
-
-   dat_vec <- unname(unlist(dat)) # change to an unnamed date vector
+    
+    dat_vec <- unname(unlist(dat)) # change to an unnamed date vector
   #for (d in dat_vec) {
-      # Get position (layer) of date in raster brick
-      lyr <- which(dats2 == d)
-      # Make the plots
-      # If plant disease (BOXB), use different titles than for insects
-      PlotMap(subset(brick("DDtotal.tif"), lyr), d, 
-            "Degree day (DD) accumulation", "Degree days", "Misc_output/DDtotal")
-      PlotMap(subset(brick("CumDDs.tif"), lyr), d, 
-            "Plant disease degree-day (DD) accum.", "Plant disease\ndegree days", 
-            "Misc_output/Cum_DDs")
-      PlotMap(subset(brick("Cum_Inf_Risk.tif"), lyr), d, 
-            "Cumulative infection risk", "Cumulative\ninfection risk", "Cum_Inf_Risk")
-      
-      # Generate summary maps for Lifestage and Number of Generations
-      PlotMap(subset(brick("Lifestage.tif"), lyr), d,
-              "Lifestage", "Stage", "Misc_output/Lifestage")
-      PlotMap(subset(brick("NumGen.tif"), lyr), d,
-              "Number of generations", "No. of\ngenerations", "Misc_output/NumGen")
-      
-      # Climate stress exclusion and stress unit summary maps 
-      if (exclusions_stressunits) {
-        
-        # For BOXB
-        PlotMap(subset(brick("Cum_Inf_Risk_Excl1.tif"), lyr), d,
-                "Cumulative infection risk w/ climate stress excl.", 
-                "Cumulative infection\nrisk", "Cum_Inf_Risk_Excl1")
-        PlotMap(subset(brick("Cum_Inf_Risk_Excl2.tif"), lyr), d,
-                "Cumulative infection risk w/ climate stress excl.",
-                "Cumulative infection\nrisk", "Cum_Inf_Risk_Excl2")
+  #print(d)
+    # Get position (layer) of date in raster brick
+    lyr <- which(dats2 == d)
+    
+    # Make the plots
+    # If plant disease (BOXB), use different titles than for insects
+    PlotMap(subset(brick("DDtotal.tif"), lyr), d, 
+          "Degree day (DD) accumulation", "Degree days", "Misc_output/DDtotal")
+    PlotMap(subset(brick("CumDDs.tif"), lyr), d, 
+          "Plant disease degree-day (DD) accum.", "Plant disease\ndegree days", 
+          "Misc_output/Cum_DDs")
+    
+    # Risk map attributes
+    risk_titl <- "Cumulative infection risk"
+    risk_titl2 <- "Cumulative infection risk w/ climate stress excl."
+    risk_lgd <- "Cumulative\ninfection risk"
+    
+    # Total infection risk accumulation - put last map in main output folder
+    if (d == last(dats2)) {
+        riskfl_pth <- "Cum_Inf_Risk_Total"
+      } else {
+        riskfl_pth <- "Misc_output/Cum_Inf_Risk_Total"
+      }
+    
+    PlotMap(subset(brick("Cum_Inf_Risk_Total.tif"), lyr), d, 
+            risk_titl, risk_lgd, riskfl_pth)
 
-        # Generate summary maps for Lifestage and NumGen w/ climate stress excl.
-        PlotMap(subset(brick("Lifestage_Excl1.tif"), lyr), d,
-                "Lifestage w/ climate stress excl.", "Stage", 
-                "Misc_output/Lifestage_Excl1")
-        PlotMap(subset(brick("Lifestage_Excl2.tif"), lyr), d,
-                "Lifestage w/ climate stress excl.", "Stage", 
-                "Misc_output/Lifestage_Excl2")
-        PlotMap(subset(brick("NumGen_Excl1.tif"), lyr), d,
-                "No. of gens w/ climate stress excl.", 
-                "No. of\ngenerations", "Misc_output/NumGen_Excl1")
-        PlotMap(subset(brick("NumGen_Excl2.tif"), lyr), d,
-                "NumGen w/ climate stress excl.", 
-                "No. of\ngenerations", "Misc_output/NumGen_Excl2")
-        
-        # Exclusion maps (-1 = moderate; -2 = severe)
-        excl_types <- c("Cold_Stress_Excl", "Heat_Stress_Excl", 
-                        "Dry_Stress_Excl", "All_Stress_Excl")
-        unit_types <- c("Cold_Stress_Units", "Heat_Stress_Units", "Dry_Stress_Units")
-        max1 <- c(coldstress_units_max1, heatstress_units_max1, drystress_units_max1)
-        max2 <- c(coldstress_units_max2, heatstress_units_max2, drystress_units_max2)
-        
-        for (i in 1:length(excl_types)) {
-          titl <- str_to_sentence(gsub("_", " ", excl_types[i]))
-          titl <- gsub("excl", "exclusion", titl)
-          # Exclusion summary maps
-          PlotMap(subset(brick(paste0(excl_types[i], ".tif")), lyr), d, 
-                  titl, "Exclusion status", 
-                  paste0("Misc_output/", excl_types[i]))
-        }
-        
-        # Climate stress unit accumulation summary maps
-        unit_types <- c("Cold_Stress_Units", "Heat_Stress_Units", "Dry_Stress_Units")
-        max1 <- c(coldstress_units_max1, heatstress_units_max1, drystress_units_max1)
-        max2 <- c(coldstress_units_max2, heatstress_units_max2, drystress_units_max2)
-        
-        for (i in 1:length(unit_types)) {
-          titl <- str_to_sentence(gsub("_", " ", unit_types[i]))
-          PlotMap_stress(subset(brick(paste0(unit_types[i], ".tif")), lyr), d, 
-                         max1[i], max2[i], titl, titl, 
-                         paste0("Misc_output/", unit_types[i]))
-        }
-        
+    # Infection risk maps relative to current date (only 1 layer)
+    if (d == threedayago) {
+      PlotMap(subset(brick("Cum_Inf_Risk_3day.tif"), 1), d, 
+              paste("Three-day", tolower(risk_titl)), risk_lgd, "Cum_Inf_Risk_3day")
     }
-#}
+    
+    if (d == twodayago) {
+      PlotMap(subset(brick("Cum_Inf_Risk_2day.tif"), 1), d, 
+              paste("Two-day", tolower(risk_titl)), risk_lgd, "Cum_Inf_Risk_2day")
+    }
+
+    # Generate summary maps for Lifestage and Number of Generations
+    PlotMap(subset(brick("Lifestage.tif"), lyr), d,
+            "Lifestage", "Stage", "Misc_output/Lifestage")
+    PlotMap(subset(brick("NumGen.tif"), lyr), d,
+            "Number of generations", "No. of\ngenerations", "Misc_output/NumGen")
+    
+    # Climate stress exclusion and stress unit summary maps 
+    if (exclusions_stressunits) {
+      
+      # For BOXB - cumulative infection risk
+      PlotMap(subset(brick("Cum_Inf_Risk_Total_Excl1.tif"), lyr), d,
+              risk_titl2, risk_lgd, paste0(riskfl_pth, "_Excl1"))
+      PlotMap(subset(brick("Cum_Inf_Risk_Total_Excl2.tif"), lyr), d,
+              risk_titl2, risk_lgd, paste0(riskfl_pth, "_Excl2"))
+      
+      if (d == threedayago) {
+        PlotMap(subset(brick("Cum_Inf_Risk_3day_Excl1.tif"), 1), d,
+                paste("Three-day", tolower(risk_titl2)), risk_lgd, "Cum_Inf_Risk_3day_Excl1")
+        PlotMap(subset(brick("Cum_Inf_Risk_3day_Excl2.tif"), 1), d,
+                paste("Three-day", tolower(risk_titl2)), risk_lgd, "Cum_Inf_Risk_3day_Excl2")
+      }
+      
+      if (d == twodayago) {
+        PlotMap(subset(brick("Cum_Inf_Risk_2day_Excl1.tif"), 1), d,
+                paste("Two-day", tolower(risk_titl2)), risk_lgd, "Cum_Inf_Risk_2day_Excl1")
+        PlotMap(subset(brick("Cum_Inf_Risk_2day_Excl2.tif"), 1), d,
+                paste("Two-day", tolower(risk_titl2)), risk_lgd, "Cum_Inf_Risk_2day_Excl2")
+      }
+      
+      # Generate summary maps for Lifestage and NumGen w/ climate stress excl.
+      PlotMap(subset(brick("Lifestage_Excl1.tif"), lyr), d,
+              "Lifestage w/ climate stress excl.", "Stage", 
+              "Misc_output/Lifestage_Excl1")
+      PlotMap(subset(brick("Lifestage_Excl2.tif"), lyr), d,
+              "Lifestage w/ climate stress excl.", "Stage", 
+              "Misc_output/Lifestage_Excl2")
+      PlotMap(subset(brick("NumGen_Excl1.tif"), lyr), d,
+              "Number of generations w/ climate stress excl.", 
+              "No. of\ngenerations", "Misc_output/NumGen_Excl1")
+      PlotMap(subset(brick("NumGen_Excl2.tif"), lyr), d,
+              "Number of generations w/ climate stress excl.", 
+              "No. of\ngenerations", "Misc_output/NumGen_Excl2")
+      
+      # Exclusion maps (-1 = moderate; -2 = severe)
+      excl_types <- c("Cold_Stress_Excl", "Heat_Stress_Excl", 
+                      "Dry_Stress_Excl", "All_Stress_Excl")
+      unit_types <- c("Cold_Stress_Units", "Heat_Stress_Units", "Dry_Stress_Units")
+      max1 <- c(coldstress_units_max1, heatstress_units_max1, drystress_units_max1)
+      max2 <- c(coldstress_units_max2, heatstress_units_max2, drystress_units_max2)
+        
+      for (i in 1:length(excl_types)) {
+        titl <- CapTitl(gsub("_", " ", excl_types[i]))
+        titl <- gsub("excl", "exclusion", titl)
+        # Exclusion summary maps
+        PlotMap(subset(brick(paste0(excl_types[i], ".tif")), lyr), d, 
+                titl, "Exclusion status", 
+                paste0("Misc_output/", excl_types[i]))
+      }
+      
+      # Climate stress unit accumulation summary maps
+      unit_types <- c("Cold_Stress_Units", "Heat_Stress_Units", "Dry_Stress_Units")
+      max1 <- c(coldstress_units_max1, heatstress_units_max1, drystress_units_max1)
+      max2 <- c(coldstress_units_max2, heatstress_units_max2, drystress_units_max2)
+      
+      for (i in 1:length(unit_types)) {
+        titl <- CapTitl(gsub("_", " ", unit_types[i]))
+        PlotMap_stress(subset(brick(paste0(unit_types[i], ".tif")), lyr), d, 
+                       max1[i], max2[i], titl, titl, 
+                       paste0("Misc_output/", unit_types[i]))
+      }
+      
+    }
 }
+#}
 
 stopCluster(cl)
-rm(cl)
 
 # Generation and stage maps (StageCount) require some extra processing
 
@@ -2734,11 +3004,10 @@ for (i in 1:length(StageCt_lst)) {
 }
 
 stopCluster(cl)
-rm(cl)
 
 # Log messages
 if (exclusions_stressunits) {
-  LogWrap("\n\n", "Done with DDtotal, CumDDs, CumDDLW, Lifesetage, NumGen,
+  LogWrap("\n\n", "Done with DDtotal, CumDDs, CumDDLW, Lifestage, NumGen,
           Generation and Stage, climate stress exclusions, and climate 
           stress unit maps", "\n")
   cat("\n", str_wrap("Done with DDtotal, CumDDs, CumDDLW, Lifestage, NumGen,
@@ -2795,7 +3064,8 @@ if (pems) {
   # rasters and generate summary maps
   RegCluster(length(PEM_types))
   
-  foreach(type = PEM_types, .packages = pkgs, .inorder = FALSE) %dopar% {
+  pem_maps <- foreach(type = PEM_types, .packages = pkgs, 
+                      .inorder = FALSE) %dopar% {
   #for (type in PEM_types) {
   #print(type)
     files_by_type <- PEM_files[grep(pattern = paste0(type, ".tif"), 
@@ -2804,33 +3074,34 @@ if (pems) {
     PEM_brk <- brick(raster::stack(files_by_type))
     PEM_brk[PEM_brk == 0] <- NA
     
-    # Create event label to be used for making summary maps, and plot map
-    eventLabel_df <- dplyr::filter(PEM_event_labels, PEM_types == type) %>% 
-      dplyr::select(finalLabel) %>%
-      mutate(., finalLabel = ifelse(type == OW_pem, paste("Date of OW gen.", 
-                                            OWEventLabel), finalLabel))          
-    eventLabel <- paste(eventLabel_df$finalLabel)
-    
-    # Plot summary maps; if PEM has climate stress excl. modify labels/outname
-    if (grepl("Excl", type)) {
-      titl <- paste0(eventLabel, " w/ climate stress exclusion")
-    } else {
-      titl <- eventLabel
+    # Do not produce maps if all values are NA
+    if (any(values(PEM_brk) >= 0, na.rm = TRUE)) {
+      # Create event label to be used for making summary maps, and plot map
+      eventLabel_df <- dplyr::filter(PEM_event_labels, PEM_types == type) %>% 
+        dplyr::select(finalLabel) %>%
+        mutate(., finalLabel = ifelse(type == OW_pem, paste("Date of OW gen.", 
+                                              OWEventLabel), finalLabel))          
+      eventLabel <- paste(eventLabel_df$finalLabel)
+      
+      # Plot summary maps; if PEM has climate stress excl. modify labels/outname
+      if (grepl("Excl", type)) {
+        titl <- paste0(eventLabel, " w/ climate stress exclusion")
+      } else {
+        titl <- eventLabel
+      }
+             
+      PlotMap(PEM_brk, last(dats2), titl, paste(eventLabel, sep = " "), 
+              paste0("Misc_output/", type))
+      }
     }
-           
-    PlotMap(PEM_brk, last(dats2), titl, paste(eventLabel, sep = " "), 
-            paste0("Misc_output/", type))
-    
-  }
-}
-#}
 
-stopCluster(cl)
-rm(cl)
+  stopCluster(cl)
   
+}
+
 # Log file messages
 if (pems == 1) {
-  LogWrap("\n\n", "Done with Pest Event Maps", "")
+  LogWrap("\n\n", "Done with Pest Event Maps", "\n")
   cat("\nDone with Pest Event Maps\n")  
 } 
 
@@ -2849,30 +3120,13 @@ cat("\nDone w/ final analyses and map production\n\n",
 
 #### * Rename final files and move misc files ####
 
-# Create list of files that will be kept in the main output folder. These 
-# include outputs for the last day of the sampled time period, with the 
-# exception of Stage Count outputs.
-last_dat_fls <- list.files(pattern = glob2rx(paste0("*", last(dats2), "*.png$")))
+# Create list of files that will be kept in the main output folder and put
+# species abbreviation onto file name.
+final_risk_fls <- list.files(pattern = "*.png$")
+new_names <- paste0(spp, "_", final_risk_fls)
 
-#stgCnt_remove <- grep(pattern = glob2rx(paste0("*StageCount*", last(dats2), 
-#                                              "*")), last_dat_fls, value = TRUE)
-#last_dat_fls <- last_dat_fls[!last_dat_fls %in% stgCnt_remove]
-
-# If current year was sampled then keep infection risk outfile for the current day 
-# Then make a list of final output files to rename.
-if (start_year == current_year) {
-  today_fls <- list.files(pattern = glob2rx(paste0("*Cum_Inf_Risk*", today, "*.png$")))
-  onedayago_fls <- list.files(pattern = glob2rx(paste0("*Cum_Inf_Risk*", onedayago, "*.png$")))
-  twodayago_fls <- list.files(pattern = glob2rx(paste0("*Cum_Inf_Risk*", twodayago, "*.png$")))
-  final_fls <- c(last_dat_fls, today_fls, onedayago_fls, twodayago_fls)
-} else {
-  final_fls <- c(last_dat_fls)
-}
-
-# Put species abbreviation in final output files (rename)
-new_names <- paste0(spp, "_", final_fls)
-if (length(final_fls) > 0) {
-  invisible(file.rename(final_fls, new_names))  
+if (length(final_risk_fls) > 0) {
+  invisible(file.rename(final_risk_fls, new_names))  
 } else {
   LogWrap("\n", "No PNG files for final outputs - check for errors", "\n")
   cat("\nNo PNG files for final outputs - check for errors\n")
@@ -2881,13 +3135,10 @@ if (length(final_fls) > 0) {
 LogWrap("", paste0("Renamed all final PNG files to include ", spp, " in file name"), "\n")
 cat("Renamed all final PNG files to include ", spp, " in file name\n", sep = "")
 
-# All other misc files (w/out spp name in file name) are moved to "/Misc_output"
-misc_fls <- grep(list.files(path = output_dir), 
-                 pattern = spp, invert = TRUE, value = TRUE) 
-misc_fls <- misc_fls[!(misc_fls %in% 
-                         c("Misc_output", "previous_run", "Logs_metadata"))]
-invisible(file.copy(misc_fls, paste0(output_dir, "/Misc_output/")))
-invisible(file.remove(misc_fls))
+# Move raster outputs to "Misc_output"
+rast_out_fls <- list.files(path = output_dir, pattern = "*.tif$") 
+invisible(file.copy(rast_out_fls, paste0(output_dir, "/Misc_output/")))
+invisible(file.remove(rast_out_fls))
 
 # Wrap up log file and report time for entire model run
 LogWrap("\n", "MODEL RUN DONE", "\n")
@@ -2899,4 +3150,4 @@ cat("\nRun time for entire model =", total_exectime, "min\n\n")
 
 # Clean up
 rm(list = ls(all.names = TRUE)) # Clear all objects including hidden objects
-gc()
+
